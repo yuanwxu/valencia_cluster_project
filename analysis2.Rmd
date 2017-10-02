@@ -1,0 +1,312 @@
+---
+title: "Transmission Cluster with Inferred MLRA"
+author: "Yuanwei Xu"
+date: "22 September 2017"
+#date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+I use [IQ-TREE](http://www.iqtree.org/) to generate a ML tree from the squence data of a cluster. 
+Because there is MLRA sequence in the `.fas` file, we could remove this record since it was 
+infered and no date information available; or we could
+include the MLRA sequence in phylogenetic tree reconstruction but as such we also need to supply uncertainty
+bound for the date, which is required by the `treedater` package.
+
+```{r library, include=FALSE}
+library(ape)
+library(tidyverse)
+library(readxl)
+```
+
+Consider the first cluster: `run_alignment_CL01`. ML tree was fit without the MLRA sequence, and the number
+of constant nucleotide sites were also specified using `IQ-TREE`'s command line argument. 
+
+The epi data contains sampling time information, so we read the epi data into R. Before proceeding further,
+we should correct the inconsistent formating. There is also a data entry error in one of the labels in the
+`.fas` file, this has been fixed; otherwise the `treedater` wrapper defined below would report error.
+```{r epi_info}
+epi_info <- read_excel("Data/epi_info.xlsx")
+
+# === Correction for data inconsistency ===
+epi_info[152, c("Diagnostic_date", "Symptom_onset","PH_declaration")] <- 
+  c("16/06/2014", "15/05/2014", "17/06/2014")
+# =========================================
+
+epi_info <- epi_info %>%
+   mutate_at(vars(Diagnostic_date:PH_declaration), parse_date, format = "%d/%m/%Y")
+```
+
+We define some helper functions to get us the desired format of sampling times and uncertainty bounds (if 
+applicable) for use in `treedater`. The function `get_stsTreedater` is designed to work with trees 
+including the MLRA tip, and returns both sampling times and uncertainty bounds; the function 
+`get_sts2Treedater` works for trees without the MLRA tip, and returns sampling times and, if applicable, 
+tip labels that are absent in the epi data. `missingstsFix` is a simple function to fill in missing values 
+(if exist) in sampling times and create associated uncertainty bounds.
+```{r sts_helper}
+# epi_info: The (cleaned) epi data of clusters_alignments_valencia read from the excel file 
+#
+# tre: ML/consensus tree generated from IQ_TREE
+#
+# ube: uncertainty bound extension. This is used to create uncertainty bound in the form of
+#      [min(date)-ube, max(date)+ube]
+get_stsTreedater <- function(epi_info, tre, ube = 1){
+  # sts: a two-column data frame (tibble) showing ID and diagnostic date, all IDs should appear in 
+  #      the ML tree tip lables
+  sts <- epi_info %>%
+    filter(`Lab ID` %in% tre$tip.label) %>%
+    select(`Lab ID`, Diagnostic_date) %>%
+    mutate(Diagnostic_date = lubridate::decimal_date(Diagnostic_date))
+  
+  tips_noMatch <- dplyr::setdiff(tre$tip.label, sts$`Lab ID`)
+  if(tips_noMatch != "MLRA") warning("Found tip label not 'MLRA' and not present in epi data.")
+  
+  lower <- min(sts$Diagnostic_date); upper <- max(sts$Diagnostic_date); mid <- (lower + upper)/2
+  sts2 <- rbind(sts, tibble(`Lab ID`=tips_noMatch, Diagnostic_date = rep(mid, length(tips_noMatch))))
+  sts2 <- setNames(sts2$Diagnostic_date, nm = sts2$`Lab ID`) # turn into named vector
+  sts2 <- sts2[tre$tip.label] # possibly reorder
+  dlow <- sts2[tips_noMatch]-lower+ube; dup <- upper-sts2[tips_noMatch]+ube
+  sts2.df <- data.frame(lower = sts2[tips_noMatch]-dlow, upper = sts2[tips_noMatch]+dup)
+  list(sts = sts2, sts.df = sts2.df)
+}
+
+get_sts2Treedater <- function(epi_info, tre){
+  sts <- epi_info %>%
+    filter(`Lab ID` %in% tre$tip.label) %>%
+    select(`Lab ID`, Diagnostic_date) %>%
+    mutate(Diagnostic_date = lubridate::decimal_date(Diagnostic_date))
+  
+  tips_noMatch <- dplyr::setdiff(tre$tip.label, sts$`Lab ID`)
+  if(length(tips_noMatch) > 0) warning("Found tip label not present in epi data")
+  
+  sts2 <- setNames(sts$Diagnostic_date, nm = sts$`Lab ID`) # turn into named vector
+  sts2 <- sts2[tre$tip.label] # include possibly missing tip label
+  if(anyNA(sts2)) warning("Missing label or sampling times in epi data.")
+  if(length(tips_noMatch) > 0)
+    return(list(sts=sts2, tips_noMatch=tips_noMatch))
+  else
+    return(list(sts=sts2))
+}
+
+# stsObj: list object returned from get_sts2Treedater()
+# ube: uncertainty bound extension. This is used to create uncertainty bound in the form of
+#      [min(date)-ube, max(date)+ube]
+missingstsFix <- function(stsObj, ube = 1){
+  sts <- stsObj$sts
+  if(!anyNA(sts) && length(stsObj)==1) stop("No missing values, nothing to do.")
+  lower <- min(sts, na.rm = TRUE); upper <- max(sts, na.rm = TRUE)
+  mid <- (lower+upper)/2
+
+  len <- sum(is.na(sts))
+  ind <- which(is.na(sts))
+  sts[is.na(sts)] <- mid
+  if(length(stsObj) > 1){
+    names(sts)[which(is.na(names(sts)))] <- stsObj$tips_noMatch
+  }
+  sts.df <- data.frame(lower = rep(lower-ube, len),
+                         upper = rep(upper+ube, len),
+                         row.names = names(sts)[ind])
+  
+  list(sts=sts, sts.df=sts.df)
+}
+```
+
+
+I wrote a simple wrapper for calling the `dater` function in `treedater` package. The function takes in the 
+path to ML tree file, the sequence length, and the (cleaned) epi data, it returns the object returned by the
+`dater` function, which can then be used in `transphylo`.
+```{r treedater_wrapper}
+# A wrapper for treedater analysis
+# file: path to ML tree file
+# sqlen: sequence length (sites in alignment)
+# epi_info: the (cleaned) epi data
+# ...: parameter to be passed to dater()
+tdaterAnalysis <- function(file, sqlen, epi_info, ...){
+  tre <- read.tree(file)
+  # if(any(!(tre$tip.label %in% epi_info$`Lab ID`)))
+  #   stop("At least one tip label does not match epi info.")
+  
+  sts <- get_sts2Treedater(epi_info, tre)
+  
+  if(anyNA(sts$sts) || length(sts)>1){
+    warning("missingstsFix() called.")
+    mf <- missingstsFix(sts)
+    dtr <- dater(tre, mf$sts, sqlen, strict = TRUE, estimateSampleTimes = mf$sts.df)
+  }
+  else{
+    dtr <- dater(tre, sts$sts, sqlen, strict=TRUE, ...)  
+  }
+  dtr
+}
+```
+
+The ML tree was produced with command `iqtree -s <filepath> -fconst 758,1449,1444,758`, where the numbers following `-fconst` are the number of constant A, C, G, T sites. Now let use fit a strict molecular clock to the ML phylogenetic tree.
+```{r treedater, message=FALSE}
+library(treedater)
+# Treedater analysis
+dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL01.fas.treefile", sqlen = 4444, epi_info)
+plot(dtr) 
+```
+
+The dated tree has near-zero branch length:
+```{r zero_brlen}
+dtr$edge.length
+```
+
+`Transphylo` may not run when there are branches that are close to zero. So I manually shifted these branches
+by a small positive constant.
+```{r branch_shift}
+dtr$edge.length <- with(dtr, ifelse(abs(edge.length)<1e-5, edge.length+0.1, edge.length))
+```
+
+We then use `transphylo` to do MCMC inference of transmission tree.
+```{r transphylo, echo=TRUE, results="hide"}
+# Transphylo
+library(TransPhylo)
+ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
+ws.shape <- 1.1; ws.scale <- 1/0.4
+w.shape <- 1.3; w.scale <- 1/0.3
+set.seed(1)
+record <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 4000, thinning = 10)
+```
+
+The combined phylogenetic and transmission tree and the consensus transmission tree obtained from 
+the posterior:
+```{r}
+plotCTree(record[[400]]$ctree)
+cons_tree <- consTTree(record)
+plotTTree(cons_tree, w.shape, w.scale)
+```
+
+The consensus transmission tree suggests an unknown source and two subgroups in the cluster, which are both
+consistent with the provided graphical representation of the cluster (`CL01`), with the unknown source being
+the inferred MLRA (in red) and the two subgroups being `(G368, G553, G566, G1288, G1411)` and 
+`(G1099, G1163, G401)`. In addition, the consensus tree also shows that the MLRA does not directly infect
+any of the observed cases in the cluster, but through one or two missing cases. This suggests that 
+a few nodes are likely missing on the transmission path eminating from MLRA in the given transmission graph.
+
+Let us find the median transmission tree using `wiwMedTree` in `treespace` package. To prepare for the input
+to `wiwMedTree`, we need a list of MRCI depths matrices corresponding to the trees in `record`, so we use
+a function in `transphylo_extras.R`
+```{r, message=FALSE}
+library(treespace)
+# requires treespace. 
+# create list of wiw information in order to compute transmission tree distances
+#' @param record  MCMC output produced by inferTTree
+#' @return list of MRCI information required by wiwTreeDist, one entry for each transmission tree that is included
+ getTTreeDistInfo <- function(record) {
+  matList <- lapply(1:length(record), function(x) {
+  info <- extractTTree(record[[x]]$ctree)$ttree
+  wiw <- cbind(info[,3],1:length(info[,1]))
+  findMRCIs(wiw)$mrciDepths
+})
+return(matList)
+ }
+
+matList <- getTTreeDistInfo(record)
+out <- wiwMedTree(matList, sampled = seq_along(cons_tree$nam))
+# plot the median tree
+plotCTree(record[[out$median]]$ctree) 
+plotTTree(extractTTree(record[[out$median]]$ctree), w.shape, w.scale)
+```
+
+The median transmission tree looks similar to the consensus transmission tree, except that the group that was
+infected earlier in the consensus tree now gets infected later --- this is not very suprising given that the
+interval between the two infections is relatively small in both the consensus and the median tree, and so there
+is uncertainty which happened earlier.
+
+The number of unsampled cases is shown in the bar chart below, again using one of the functions in
+`transphylo_extras.R`
+```{r}
+getNumberUnsampled <- function(ctree) {tt=extractTTree(ctree)$ttree; return(sum(is.na(tt[,2])))}
+tibble(unsamp = sapply(record, function(x) getNumberUnsampled(x$ctree))) %>%
+  ggplot(aes(unsamp)) +
+  geom_bar()
+```
+
+The posterior probability of unsampled source case is:
+```{r}
+prob_unsamp_src <- function(record){
+  probs <- vector("double", length(record))
+  for(i in seq_along(record)){
+    tt <- extractTTree(record[[i]]$ctree)$ttree
+    src_ind <- which(tt[,3] == 0)
+    probs[i] <- is.na(tt[src_ind, 2])
+  }
+  mean(probs)
+}
+
+prob_unsamp_src(record)
+```
+
+
+### Repeat for some other clusters ###
+```{r, include=FALSE}
+dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL03.fas.treefile", sqlen = 4429, epi_info)
+plot(dtr) 
+dtr$edge.length <- with(dtr, ifelse(abs(edge.length)<1e-5, edge.length+0.1, edge.length))
+plot(dtr)
+```
+```{r, include=FALSE, results="hide"}
+ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
+record_CL03 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 4000, thinning = 10)
+plotCTree(record_CL03[[400]]$ctree)
+cons_tree <- consTTree(record_CL03)
+plotTTree(cons_tree, w.shape, w.scale)
+```
+
+```{r, include=FALSE}
+dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL04.fas.treefile", sqlen = 4423, epi_info)
+plot(dtr) 
+dtr$edge.length <- with(dtr, ifelse(abs(edge.length)<1e-5, edge.length+0.1, edge.length))
+plot(dtr)
+```
+```{r, include=FALSE, results="hide"}
+ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
+record_CL04 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 4000, thinning = 10)
+plotCTree(record_CL04[[400]]$ctree)
+cons_tree <- consTTree(record_CL04)
+plotTTree(cons_tree, w.shape, w.scale)
+```
+
+```{r, include=FALSE}
+dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL07.fas.treefile", sqlen = 4427, epi_info)
+plot(dtr) 
+```
+```{r, include=FALSE, results="hide"}
+ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
+record_CL07 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 4000, thinning = 10)
+plotCTree(record_CL07[[400]]$ctree)
+cons_tree <- consTTree(record_CL07)
+plotTTree(cons_tree, w.shape, w.scale)
+```
+
+```{r, include=FALSE}
+dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL10.fas.treefile", sqlen = 4421, epi_info)
+plot(dtr) 
+dtr$edge.length <- with(dtr, ifelse(abs(edge.length)<1e-5, edge.length+0.1, edge.length))
+plot(dtr)
+```
+```{r, include=FALSE, results="hide"}
+ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
+record_CL10 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 4000, thinning = 10)
+plotCTree(record_CL10[[400]]$ctree)
+cons_tree <- consTTree(record_CL10)
+plotTTree(cons_tree, w.shape, w.scale)
+```
+
+Some other clusters of relatively large size were studied, following the same procedure for cluster `CL01`, and the posterior probability of unsampled source case is shown in this table. We see that it is almost certain that
+`CL01` was infected by someone outside of the cluster, whereas it is very likely that `CL03` and `CL10` were infected by someone within the cluster. It is not certain about this for `CL04` and `CL07`.
+
+```{r unsamp_src_prob, echo=FALSE}
+data.frame(cluster = stringr::str_c("CL", c("01","03","04","07","10")),
+           prob = map_dbl(list(record, record_CL03, record_CL04, 
+                               record_CL07, record_CL10), prob_unsamp_src)) %>% 
+  spread(cluster, prob) %>%
+  knitr::kable(caption = "Probability of unsampled source case for some clusters.")
+
+```
+
