@@ -1,8 +1,8 @@
 ---
 title: "Transmission Cluster with Inferred MLRA"
 author: "Yuanwei Xu"
-date: "22 September 2017"
-#date: "`r Sys.Date()`"
+#date: "22 September 2017"
+date: "`r Sys.Date()`"
 output: html_document
 ---
 
@@ -242,6 +242,16 @@ prob_unsamp_src <- function(record){
 prob_unsamp_src(record)
 ```
 
+We run a longer `transphylo` simulation in order to get some statistics for the basic reproduction number $R_0$.
+We see that both the mean and median of $R_0$ are less than 1.
+```{r basic_reprod_num, results="hide"}
+record <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 10000, thinning = 10)
+plot(map_dbl(record, "off.r"), ylab='Basic reproduction number R', xlab='MCMC iterations',type='l')
+```
+```{r}
+summary(map_dbl(record, "off.r")[500:1000])
+```
+
 
 ### Repeat for some other clusters ###
 ```{r, include=FALSE}
@@ -252,7 +262,7 @@ plot(dtr)
 ```
 ```{r, include=FALSE, results="hide"}
 ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
-record_CL03 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 4000, thinning = 10)
+record_CL03 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 10000, thinning = 10)
 plotCTree(record_CL03[[400]]$ctree)
 cons_tree <- consTTree(record_CL03)
 plotTTree(cons_tree, w.shape, w.scale)
@@ -266,7 +276,7 @@ plot(dtr)
 ```
 ```{r, include=FALSE, results="hide"}
 ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
-record_CL04 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 4000, thinning = 10)
+record_CL04 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 10000, thinning = 10)
 plotCTree(record_CL04[[400]]$ctree)
 cons_tree <- consTTree(record_CL04)
 plotTTree(cons_tree, w.shape, w.scale)
@@ -278,7 +288,7 @@ plot(dtr)
 ```
 ```{r, include=FALSE, results="hide"}
 ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
-record_CL07 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 4000, thinning = 10)
+record_CL07 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 10000, thinning = 10)
 plotCTree(record_CL07[[400]]$ctree)
 cons_tree <- consTTree(record_CL07)
 plotTTree(cons_tree, w.shape, w.scale)
@@ -292,7 +302,7 @@ plot(dtr)
 ```
 ```{r, include=FALSE, results="hide"}
 ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
-record_CL10 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 4000, thinning = 10)
+record_CL10 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 10000, thinning = 10)
 plotCTree(record_CL10[[400]]$ctree)
 cons_tree <- consTTree(record_CL10)
 plotTTree(cons_tree, w.shape, w.scale)
@@ -302,11 +312,28 @@ Some other clusters of relatively large size were studied, following the same pr
 `CL01` was infected by someone outside of the cluster, whereas it is very likely that `CL03` and `CL10` were infected by someone within the cluster. It is not certain about this for `CL04` and `CL07`.
 
 ```{r unsamp_src_prob, echo=FALSE}
-data.frame(cluster = stringr::str_c("CL", c("01","03","04","07","10")),
+tibble(cluster = stringr::str_c("CL", c("01","03","04","07","10")),
            prob = map_dbl(list(record, record_CL03, record_CL04, 
                                record_CL07, record_CL10), prob_unsamp_src)) %>% 
   spread(cluster, prob) %>%
   knitr::kable(caption = "Probability of unsampled source case for some clusters.")
 
+```
+
+We can also get estimate of the basic reproduction number $R_0$, this is the mean of the number of secondary cases per primary case. In `transphylo` model, this is just the mean of the negative binomial distribution.
+Since `transphylo` by default does not update the second parameter ($p$) of the negative binomial in its MCMC 
+proposal and the default value of $p$ is 0.5, the mean is therefore given by the first parameter ($r$) 
+which can be extracted from the output.
+
+```{r reprod_num, echo=FALSE}
+basic_reprod_num <- function(record) summary(map_dbl(record, "off.r")[500:1000])
+
+tibble(cluster = stringr::str_c("CL", c("01","03","04","07","10")),
+           R_0 = map(list(record, record_CL03, record_CL04, 
+                          record_CL07, record_CL10), basic_reprod_num)) %>%
+  unnest(R_0) %>%
+  mutate(summary = rep(c("1-Min", "2-1st Qu.", "3-Median", "4-Mean", "5-3rd Qu.", "6-Max"), 5)) %>%
+  spread(cluster, R_0) %>%
+  knitr::kable(caption = "Summary statistics for the basic reproduction number.")
 ```
 
