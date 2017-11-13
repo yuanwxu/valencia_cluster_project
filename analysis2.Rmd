@@ -26,14 +26,17 @@ Consider the first cluster: `run_alignment_CL01`. ML tree was fit without the ML
 of constant nucleotide sites were also specified using `IQ-TREE`'s command line argument. 
 
 The epi data contains sampling time information, so we read the epi data into R. Before proceeding further,
-we should correct the inconsistent formating. There is also a data entry error in one of the labels in the
-`.fas` file, this has been fixed; otherwise the `treedater` wrapper defined below would report error.
+we should do some tidying to clean this dataset.
 ```{r epi_info}
 epi_info <- read_excel("Data/epi_info.xlsx")
 
-# === Correction for data inconsistency ===
+# === Tidying =============================
 epi_info[152, c("Diagnostic_date", "Symptom_onset","PH_declaration")] <- 
   c("16/06/2014", "15/05/2014", "17/06/2014")
+CL03_info <- tibble(Year = 2013, `Lab ID` = "G77", `Transmission cluster` = "CL03", 
+                    Diagnostic_date = "10/12/2013", Symptom_onset = NA, PH_declaration = NA)
+epi_info <- rbind(epi_info[1:20,], CL03_info, epi_info[-(1:20),])
+rm(CL03_info)
 # =========================================
 
 epi_info <- epi_info %>%
@@ -170,14 +173,14 @@ ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
 ws.shape <- 1.1; ws.scale <- 1/0.4
 w.shape <- 1.3; w.scale <- 1/0.3
 set.seed(1)
-record <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 4000, thinning = 10)
+record_CL01 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 10000, thinning = 10)
 ```
 
 The combined phylogenetic and transmission tree and the consensus transmission tree obtained from 
 the posterior:
 ```{r}
-plotCTree(record[[400]]$ctree)
-cons_tree <- consTTree(record)
+plotCTree(record_CL01[[1000]]$ctree)
+cons_tree <- consTTree(record_CL01)
 plotTTree(cons_tree, w.shape, w.scale)
 ```
 
@@ -189,7 +192,7 @@ any of the observed cases in the cluster, but through one or two missing cases. 
 a few nodes are likely missing on the transmission path eminating from MLRA in the given transmission graph.
 
 Let us find the median transmission tree using `wiwMedTree` in `treespace` package. To prepare for the input
-to `wiwMedTree`, we need a list of MRCI depths matrices corresponding to the trees in `record`, so we use
+to `wiwMedTree`, we need a list of MRCI depths matrices corresponding to the trees in `record_CL01`, so we use
 a function in `transphylo_extras.R`
 ```{r, message=FALSE}
 library(treespace)
@@ -206,23 +209,25 @@ library(treespace)
 return(matList)
  }
 
-matList <- getTTreeDistInfo(record)
+rng <- 500:1000
+record_CL01 <- record_CL01[rng]
+matList <- getTTreeDistInfo(record_CL01)
 out <- wiwMedTree(matList, sampled = seq_along(cons_tree$nam))
 # plot the median tree
-plotCTree(record[[out$median]]$ctree) 
-plotTTree(extractTTree(record[[out$median]]$ctree), w.shape, w.scale)
+plotCTree(record_CL01[[out$median]]$ctree) 
+plotTTree(extractTTree(record_CL01[[out$median]]$ctree), w.shape, w.scale)
 ```
 
-The median transmission tree looks similar to the consensus transmission tree, except that the group that was
-infected earlier in the consensus tree now gets infected later --- this is not very suprising given that the
-interval between the two infections is relatively small in both the consensus and the median tree, and so there
-is uncertainty which happened earlier.
+The median transmission tree looks very similar to the consensus transmission tree, although the median 
+transmission tree suggests an earlier infection of `G1288`. Note that the closeness of infection times of 
+the two groups suggests that there is uncertainty about which got infected first, but we see that both
+infections were introduced around the same time between 2005 and 2006. Both the consensus and median transmission trees were calculated using the second half of the posterior sample of trees.
 
 The number of unsampled cases is shown in the bar chart below, again using one of the functions in
 `transphylo_extras.R`
 ```{r}
 getNumberUnsampled <- function(ctree) {tt=extractTTree(ctree)$ttree; return(sum(is.na(tt[,2])))}
-tibble(unsamp = sapply(record, function(x) getNumberUnsampled(x$ctree))) %>%
+tibble(unsamp = sapply(record_CL01, function(x) getNumberUnsampled(x$ctree))) %>%
   ggplot(aes(unsamp)) +
   geom_bar()
 ```
@@ -239,34 +244,51 @@ prob_unsamp_src <- function(record){
   mean(probs)
 }
 
-prob_unsamp_src(record)
+prob_unsamp_src(record_CL01)
 ```
 
-We run a longer `transphylo` simulation in order to get some statistics for the basic reproduction number $R_0$.
-We see that both the mean and median of $R_0$ are less than 1.
+We can also get estimate of the basic reproduction number $R_0$, this is the mean of the number of secondary cases per primary case. In `transphylo` model, this is just the mean of the negative binomial distribution.
+Since `transphylo` by default does not update the second parameter ($p$) of the negative binomial in its MCMC 
+proposal and the default value of $p$ is 0.5, the mean is therefore given by the first parameter ($r$) 
+which can be extracted from the output. We see that both the mean and median of $R_0$ are less than 1.
+
 ```{r basic_reprod_num, results="hide"}
-record <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 10000, thinning = 10)
-plot(map_dbl(record, "off.r"), ylab='Basic reproduction number R', xlab='MCMC iterations',type='l')
+plot(map_dbl(record_CL01, "off.r"), ylab='Basic reproduction number R', xlab='MCMC iterations',type='l')
 ```
 ```{r}
-summary(map_dbl(record, "off.r")[500:1000])
+summary(map_dbl(record_CL01, "off.r"))
 ```
 
 
-### Repeat for some other clusters ###
+## Repeat for some other clusters ##
+
+Some other clusters of relatively large size were studied, following the same procedure for cluster `CL01`.
+The consensus (top) and median (bottom) transmission trees are shown below.
+
+### CL03 ###
+
 ```{r, include=FALSE}
 dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL03.fas.treefile", sqlen = 4429, epi_info)
 plot(dtr) 
 dtr$edge.length <- with(dtr, ifelse(abs(edge.length)<1e-5, edge.length+0.1, edge.length))
 plot(dtr)
 ```
-```{r, include=FALSE, results="hide"}
+```{r, echo=FALSE, results="hide"}
 ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
 record_CL03 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 10000, thinning = 10)
-plotCTree(record_CL03[[400]]$ctree)
+
 cons_tree <- consTTree(record_CL03)
 plotTTree(cons_tree, w.shape, w.scale)
+
+record_CL03 <- record_CL03[rng]
+matList <- getTTreeDistInfo(record_CL03)
+out <- wiwMedTree(matList, sampled = seq_along(cons_tree$nam))
+# plot the median tree
+# plotCTree(record_CL03[[out$median[1]]]$ctree) 
+plotTTree(extractTTree(record_CL03[[out$median[1]]]$ctree), w.shape, w.scale)
 ```
+
+### CL04 ###
 
 ```{r, include=FALSE}
 dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL04.fas.treefile", sqlen = 4423, epi_info)
@@ -274,25 +296,43 @@ plot(dtr)
 dtr$edge.length <- with(dtr, ifelse(abs(edge.length)<1e-5, edge.length+0.1, edge.length))
 plot(dtr)
 ```
-```{r, include=FALSE, results="hide"}
+```{r, echo=FALSE, results="hide"}
 ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
 record_CL04 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 10000, thinning = 10)
-plotCTree(record_CL04[[400]]$ctree)
+
 cons_tree <- consTTree(record_CL04)
 plotTTree(cons_tree, w.shape, w.scale)
+
+record_CL04 <- record_CL04[rng]
+matList <- getTTreeDistInfo(record_CL04)
+out <- wiwMedTree(matList, sampled = seq_along(cons_tree$nam))
+# plot the median tree
+# plotCTree(record_CL04[[out$median[1]]]$ctree) 
+plotTTree(extractTTree(record_CL04[[out$median[1]]]$ctree), w.shape, w.scale)
 ```
+
+### CL07 ###
 
 ```{r, include=FALSE}
 dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL07.fas.treefile", sqlen = 4427, epi_info)
 plot(dtr) 
 ```
-```{r, include=FALSE, results="hide"}
+```{r, echo=FALSE, results="hide"}
 ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
 record_CL07 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 10000, thinning = 10)
-plotCTree(record_CL07[[400]]$ctree)
+
 cons_tree <- consTTree(record_CL07)
 plotTTree(cons_tree, w.shape, w.scale)
+
+record_CL07 <- record_CL07[rng]
+matList <- getTTreeDistInfo(record_CL07)
+out <- wiwMedTree(matList, sampled = seq_along(cons_tree$nam))
+# plot the median tree
+# plotCTree(record_CL07[[out$median[1]]]$ctree) 
+plotTTree(extractTTree(record_CL07[[out$median[1]]]$ctree), w.shape, w.scale)
 ```
+
+### CL10 ###
 
 ```{r, include=FALSE}
 dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL10.fas.treefile", sqlen = 4421, epi_info)
@@ -300,36 +340,43 @@ plot(dtr)
 dtr$edge.length <- with(dtr, ifelse(abs(edge.length)<1e-5, edge.length+0.1, edge.length))
 plot(dtr)
 ```
-```{r, include=FALSE, results="hide"}
+```{r, echo=FALSE, results="hide"}
 ptre <- ptreeFromPhylo(dtr, dateLastSample = max(dtr$sts))
 record_CL10 <- inferTTree(ptre, w.shape, w.scale, ws.shape, ws.scale, mcmcIterations = 10000, thinning = 10)
-plotCTree(record_CL10[[400]]$ctree)
+
 cons_tree <- consTTree(record_CL10)
 plotTTree(cons_tree, w.shape, w.scale)
+
+record_CL10 <- record_CL10[rng]
+matList <- getTTreeDistInfo(record_CL10)
+out <- wiwMedTree(matList, sampled = seq_along(cons_tree$nam))
+# plot the median tree
+# plotCTree(record_CL10[[out$median[1]]]$ctree) 
+plotTTree(extractTTree(record_CL10[[out$median[1]]]$ctree), w.shape, w.scale)
 ```
 
-Some other clusters of relatively large size were studied, following the same procedure for cluster `CL01`, and the posterior probability of unsampled source case is shown in this table. We see that it is almost certain that
-`CL01` was infected by someone outside of the cluster, whereas it is very likely that `CL03` and `CL10` were infected by someone within the cluster. It is not certain about this for `CL04` and `CL07`.
+The posterior probability of unsampled source case is shown. We see that it is almost certain that
+`CL01` was infected by someone outside of the cluster, whereas it is very unlikely that this is the case for
+`CL10`. Although there is some evidence for sampled index case for cluster `CL03`, `CL04` and `CL07`, the consensus and median transmission trees for these clusters show otherwise. The reason for this discrepency 
+between the probabilities and the trees can be seen if we note that the probability of a sampled index case in a cluster combines the probabilities of each individual case being the index case, however each such case is not
+significant in its probability to support a transmission tree with it being the source.
 
 ```{r unsamp_src_prob, echo=FALSE}
 tibble(cluster = stringr::str_c("CL", c("01","03","04","07","10")),
-           prob = map_dbl(list(record, record_CL03, record_CL04, 
+           prob = map_dbl(list(record_CL01, record_CL03, record_CL04, 
                                record_CL07, record_CL10), prob_unsamp_src)) %>% 
   spread(cluster, prob) %>%
   knitr::kable(caption = "Probability of unsampled source case for some clusters.")
 
 ```
 
-We can also get estimate of the basic reproduction number $R_0$, this is the mean of the number of secondary cases per primary case. In `transphylo` model, this is just the mean of the negative binomial distribution.
-Since `transphylo` by default does not update the second parameter ($p$) of the negative binomial in its MCMC 
-proposal and the default value of $p$ is 0.5, the mean is therefore given by the first parameter ($r$) 
-which can be extracted from the output.
+Summary statistics for the basic reproduction number $R_0$ can be computed, as shown below.
 
 ```{r reprod_num, echo=FALSE}
-basic_reprod_num <- function(record) summary(map_dbl(record, "off.r")[500:1000])
+basic_reprod_num <- function(record) summary(map_dbl(record, "off.r"))
 
 tibble(cluster = stringr::str_c("CL", c("01","03","04","07","10")),
-           R_0 = map(list(record, record_CL03, record_CL04, 
+           R_0 = map(list(record_CL01, record_CL03, record_CL04, 
                           record_CL07, record_CL10), basic_reprod_num)) %>%
   unnest(R_0) %>%
   mutate(summary = rep(c("1-Min", "2-1st Qu.", "3-Median", "4-Mean", "5-3rd Qu.", "6-Max"), 5)) %>%
