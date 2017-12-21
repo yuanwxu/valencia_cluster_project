@@ -137,10 +137,10 @@ tdaterAnalysis <- function(file, sqlen, epi_info, ...){
   if(anyNA(sts$sts) || length(sts)>1){
     warning("missingstsFix() called.")
     mf <- missingstsFix(sts)
-    dtr <- dater(tre, mf$sts, sqlen, strict = TRUE, estimateSampleTimes = mf$sts.df)
+    dtr <- dater(tre, mf$sts, sqlen, estimateSampleTimes = mf$sts.df)
   }
   else{
-    dtr <- dater(tre, sts$sts, sqlen, strict=TRUE, ...)  
+    dtr <- dater(tre, sts$sts, sqlen, ...)  
   }
   dtr
 }
@@ -150,7 +150,7 @@ The ML tree was produced with command `iqtree -s <filepath> -fconst 758,1449,144
 ```{r treedater, message=FALSE}
 library(treedater)
 # Treedater analysis
-dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL01.fas.treefile", sqlen = 4444, epi_info)
+dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL01.fas.treefile", sqlen = 4444, epi_info, strictClock = TRUE)
 plot(dtr) 
 ```
 
@@ -190,6 +190,8 @@ the inferred MLRA (in red) and the two subgroups being `(G368, G553, G566, G1288
 `(G1099, G1163, G401)`. In addition, the consensus tree also shows that the MLRA does not directly infect
 any of the observed cases in the cluster, but through one or two missing cases. This suggests that 
 a few nodes are likely missing on the transmission path eminating from MLRA in the given transmission graph.
+
+> ![Transmission cluster CL01](Data/CL01.png)
 
 Let us find the median transmission tree using `wiwMedTree` in `treespace` package. To prepare for the input
 to `wiwMedTree`, we need a list of MRCI depths matrices corresponding to the trees in `record_CL01`, so we use
@@ -268,7 +270,7 @@ The consensus (top) and median (bottom) transmission trees are shown below.
 ### CL03 ###
 
 ```{r, include=FALSE}
-dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL03.fas.treefile", sqlen = 4429, epi_info)
+dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL03.fas.treefile", sqlen = 4429, epi_info, strictClock = TRUE)
 plot(dtr) 
 dtr$edge.length <- with(dtr, ifelse(abs(edge.length)<1e-5, edge.length+0.1, edge.length))
 plot(dtr)
@@ -291,7 +293,7 @@ plotTTree(extractTTree(record_CL03[[out$median[1]]]$ctree), w.shape, w.scale)
 ### CL04 ###
 
 ```{r, include=FALSE}
-dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL04.fas.treefile", sqlen = 4423, epi_info)
+dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL04.fas.treefile", sqlen = 4423, epi_info, strictClock = TRUE)
 plot(dtr) 
 dtr$edge.length <- with(dtr, ifelse(abs(edge.length)<1e-5, edge.length+0.1, edge.length))
 plot(dtr)
@@ -314,7 +316,7 @@ plotTTree(extractTTree(record_CL04[[out$median[1]]]$ctree), w.shape, w.scale)
 ### CL07 ###
 
 ```{r, include=FALSE}
-dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL07.fas.treefile", sqlen = 4427, epi_info)
+dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL07.fas.treefile", sqlen = 4427, epi_info, strictClock = TRUE)
 plot(dtr) 
 ```
 ```{r, echo=FALSE, results="hide"}
@@ -335,7 +337,7 @@ plotTTree(extractTTree(record_CL07[[out$median[1]]]$ctree), w.shape, w.scale)
 ### CL10 ###
 
 ```{r, include=FALSE}
-dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL10.fas.treefile", sqlen = 4421, epi_info)
+dtr <- tdaterAnalysis(file = "MLTree/noMLRA/constSite/run_alignment_CL10.fas.treefile", sqlen = 4421, epi_info, strictClock = TRUE)
 plot(dtr) 
 dtr$edge.length <- with(dtr, ifelse(abs(edge.length)<1e-5, edge.length+0.1, edge.length))
 plot(dtr)
