@@ -1,0 +1,156 @@
+---
+title: "Simultaneious Inference of Transmission Clusters Using Transphylo"
+author: "Yuanwei Xu"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The R package TransPhylo has been extended to work on a list of phylogenetic trees, typically constructed from clusters of sequence data that are related. Clearly, we could run TransPhylo separately for each timed phylogenetic tree corresponding to each cluster. The benefit of adapting TransPhylo to take in a list of trees and do simultaneous transmission inference lies in the ability to enable parameter sharing. It means that while some parameters are updated in each MCMC step, they are shared across clusters. For example, we might believe that the basic reproduction number $R_0$ does not vary much across clusters, then it is now possible to keep a single $R_0$ rather than maintaining different $R_0$ for different clusters. This is achieved by updating the $R_0$ once, and accept/reject based on the Metropolis-Hastings ratio that is determined by the product of all tree likelihoods of the clusters. 
+
+In addition, this new parameter sharing framework should also imply faster convergence, because there are fewer number of parameters to be estimated.
+
+## Simulated Data
+
+In this section we simulate two outbreaks with the same set of parameters, and obtain phylogenetic trees corresponding to the two outbreaks. We then apply the new `TransPhylo` joint inference routine to infer the parameters and compare them with those obtained from running `TransPhylo` separately.
+
+```{r, library, message=FALSE}
+library(tidyverse)
+library(ape)
+library(TransPhylo)
+
+# The following is used only temporary and will be removed when pushing repo upstream
+source("~/Biomath/TransPhylo/R/proposal.R")
+source("~/Biomath/TransPhylo/R/computeHost.R")
+source("~/Biomath/TransPhylo/R/infer_multiTTree_shareParam.R")
+```
+
+```{r simulate, results='hide'}
+neg <- 100/365
+off.r <- 1.5
+w.shape <- 10
+w.scale <- 0.1
+ws.shape <- w.shape
+ws.scale <- w.scale
+pi <- 0.8
+
+set.seed(1234)
+simu1 <- simulateOutbreak(neg=neg, off.r=off.r, pi=pi, w.shape=w.shape,
+                         w.scale=w.scale, dateStartOutbreak=2000,dateT=2005)
+simu2 <- simulateOutbreak(neg=neg, off.r=off.r, pi=pi, w.shape=w.shape,
+                         w.scale=w.scale, dateStartOutbreak=2000,dateT=2005)
+ptree1 <- extractPTree(simu1)
+ptree2 <- extractPTree(simu2)
+
+# Plot phylo trees
+# plot(phyloFromPTree(ptree1), show.tip.label = FALSE)
+# plot(phyloFromPTree(ptree2), show.tip.label = FALSE)
+
+iters <- 1e4; thin <- 10
+record_tp1 <- inferTTree(ptree1, w.shape, w.scale, ws.shape, ws.scale,
+                         mcmcIterations = iters, thinning = thin, dateT = 2005)
+record_tp2 <- inferTTree(ptree2, w.shape, w.scale, ws.shape, ws.scale,
+                         mcmcIterations = iters, thinning = thin, dateT = 2005)
+record_tpj <- infer_multiTTree_shareParam(list(ptree1,ptree2), w.shape, w.scale, ws.shape, ws.scale, 
+                                    mcmcIterations = iters, thinning = thin, dateT = 2005,
+                                    share = c("neg", "off.r", "off.p", "pi"))
+
+# Disgard burnin 
+discard_burnin <- function(record, burnin = 0.2){
+  stopifnot(round(iters*burnin/thin) < length(record[[1]]))
+  map(record, function(x) x[round(iters*burnin/thin):length(x)])
+}
+
+# Tidy output 
+tidy_record <- function(record, name_cl){
+  # name_cl: cluster names such that name_cl[i] corresponds to record[[i]]
+  stopifnot(length(record) == length(name_cl))
+  
+  # Create placeholders for the data
+  dfneg <- matrix(nrow = length(record[[1]]), ncol = length(record))
+  colnames(dfneg) <- name_cl
+  dfneg <- as_tibble(dfneg)
+  dfoff.r <- dfneg
+  dfpi <- dfneg
+  
+  for(i in seq_along(record)){
+    dfneg[, i] <- map_dbl(record[[i]], "neg")
+    dfoff.r[, i] <- map_dbl(record[[i]], "off.r")
+    dfpi[, i] <- map_dbl(record[[i]], "pi")
+  }
+  dfneg <- dfneg %>% gather(key = "cluster", value = "neg")
+  dfoff.r <- dfoff.r %>% gather(key = "cluster", value = "off.r")
+  dfpi <- dfpi %>% gather(key = "cluster", value = "pi")
+  record <- cbind(dfneg, off.r = dfoff.r$off.r, pi = dfpi$pi)
+  record
+}
+
+record <- discard_burnin(c(list(record_tp1, record_tp2), record_tpj[1]))
+remove(record_tp1, record_tp2, record_tpj)
+
+record_tidy <- tidy_record(record, c("tp1", "tp2", "tpj"))
+colnames(record_tidy)[1] <- "simulation"
+
+
+# Get credible intervals of the parameters from tidyed output
+# Note the use of get() in summarise()
+get_CI <- function(record_tidy, probs = c(0.025,0.975)){
+  params <- names(record_tidy)[-1]
+  by_sim <- record_tidy %>% 
+    group_by(simulation)
+  
+  out <- vector("list", length(params))
+  for(i in seq_along(out)){
+    out[[i]] <- by_sim %>% 
+      summarise(CI = list(quantile(get(params[i]), c(0.025,0.975)))) %>%
+      mutate(lower = map_dbl(CI, 1), upper = map_dbl(CI, 2), param = params[i]) %>% 
+      select(-CI)
+  }
+  do.call(rbind, out)
+}
+
+record_CI <- get_CI(record_tidy)
+
+# Add true values of the parameters
+record_CI <- record_CI %>%
+  mutate(exact = rep(c(100/365, 1.5, 0.8), each = 3))
+
+
+# Plot
+ggplot(record_tidy, aes(neg)) +
+  geom_histogram() +
+  facet_wrap(~ simulation) +
+  geom_errorbarh(data = filter(record_CI, param == "neg"), 
+                 aes(xmin = lower, xmax = upper, y = 0), 
+                 color = "blue", size = 2) +
+  geom_point(data = filter(record_CI, param == "neg"), 
+             aes(exact, 0), color = "red", size = 2)
+
+ggplot(record_tidy, aes(off.r)) +
+  geom_histogram() +
+  facet_wrap(~ simulation) +
+  geom_errorbarh(data = filter(record_CI, param == "off.r"), 
+                 aes(xmin = lower, xmax = upper, y = 0), 
+                 color = "blue", size = 2) +
+  geom_point(data = filter(record_CI, param == "off.r"), 
+             aes(exact, 0), color = "red", size = 2)
+
+ggplot(record_tidy, aes(pi)) +
+  geom_histogram() +
+  facet_wrap(~ simulation) +
+  geom_errorbarh(data = filter(record_CI, param == "pi"), 
+                 aes(xmin = lower, xmax = upper, y = 0), 
+                 color = "blue", size = 2) +
+  geom_point(data = filter(record_CI, param == "pi"), 
+             aes(exact, 0), color = "red", size = 2)
+
+
+
+```
+
+The posterior samples of the parameters are shown, as well as the credible intervals, calculated as the 95% quantile interval. The true values of the parameters are shown as red dots.
+
+We see that for all three parameters, and for all simulations, the credible intervals contain the respective true parameter that was used to simulate the outbreak. However, in the joint inference case where parameters are shared, the widths of the credible intervals are shorter than those obtained from running `TransPhylo` separately. 
