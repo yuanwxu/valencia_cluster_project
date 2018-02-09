@@ -19,7 +19,7 @@ First, we extract from the phylogenetic tree (obtained from FASTTREE) the clades
 
 We plot the big phylogenetic tree which includes all sequence isolates.
 
-```{r extract_clade, include=FALSE}
+```{r extract_clade}
 library(ape)
 bigtree <- read.tree("Data/new/genome_epi_val_all_isolates_201416.tree")
 plot(bigtree, cex = 0.4)
@@ -65,7 +65,7 @@ extract_clade_cluster <- function(tree, cluster_tips){
 
 Certain tips in some clusters have unusual cryptic names, these will be corrected.
 
-```{r}
+```{r, message=FALSE}
 library(tidyverse)
 names_cl <- c(paste0("CL00", c(5,7,8,9)), paste0("CL0", c(10,11,16,20:26,31,34,39,45,50,62)))
 tiplabel_cl <- map(names_cl, get_cluster_tiplabel, path = "Data/new/")
@@ -188,7 +188,7 @@ timed_tree_cl <- fix_edge_length(timed_tree_cl)
 ```
 
 
-We apply the new routine `infer_multiTTree_shareParam` to the list of timed trees corresponding to clusters `r names_cl`, 
+We apply the new routine `infer_multiTTree_shareParam` to the list of timed trees corresponding to clusters `r names_cl[-dater_warning_index]`, 
 sharing all parameters.
 
 ```{r transphylo_run, echo=TRUE, results="hide"}
@@ -196,7 +196,7 @@ library(TransPhylo)
 date_last_cl <- map(timed_tree_cl, ~ max(.$sts))
 ptree_cl <- map2(timed_tree_cl, date_last_cl, ptreeFromPhylo)
 
-# The following is used temporarily and will be removed when pushing repo upstream
+# The following is used temporarily and will be removed when pushed upstream to TransPhylo repo or when incorporated into a new package.
 source("~/Biomath/TransPhylo/R/proposal.R")
 source("~/Biomath/TransPhylo/R/computeHost.R")
 source("~/Biomath/TransPhylo/R/infer_multiTTree_shareParam.R")
