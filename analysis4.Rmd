@@ -15,117 +15,157 @@ We extend the `TransPhylo` package so we could handle multiple transmission clus
 
 ## Case study --- TB transmission clusters in Valencia
 
-> ![Transmission cluster CL001 -- CL004](Data/new/transmission_clusters_201416_CL1-4.jpg)
+First, we extract from the phylogenetic tree (obtained from FASTTREE) the clades corresponding to 20 clustes in the estimated transmission network. 
 
-Let us focus on the first four clusters CL001-CL004. First, we extract from the phylogenetic tree (obtained from FASTTREE using sequences from all clusters) the clades corresponding to those clustes. 
-
-The code is a bit tedious, as we have to peel off subtrees from the big tree until we find the node number corresponding to the root of the clade and then extract that clade.
+We plot the big phylogenetic tree which includes all sequence isolates.
 
 ```{r extract_clade, include=FALSE}
 library(ape)
 bigtree <- read.tree("Data/new/genome_epi_val_all_isolates_201416.tree")
 plot(bigtree, cex = 0.4)
-nodelabels()
-subtree <- extract.clade(bigtree, 1440) 
-plot(subtree, cex = 0.8);nodelabels(cex = 0.5)
-tre_CL001 <- extract.clade(subtree, 161)
-
-subtree <- extract.clade(bigtree, 1110)
-plot(subtree)
-tiplabels(tip = which(subtree$tip.label %in% c("G637", "G201"))); nodelabels()
-tre_CL002 <- extract.clade(subtree, 75)
-
-subtree <- extract.clade(bigtree, 1164)
-plot(subtree)
-tiplabels(tip = which(subtree$tip.label %in% c("G77", "G258"))); nodelabels()
-tre_CL003 <- extract.clade(subtree, 157)
-
-subtree <- extract.clade(bigtree, 939)
-plot(subtree)
-tiplabels(tip = which(subtree$tip.label %in% c("G99", "G1350"))); nodelabels()
-tre_CL004 <- extract.clade(subtree, 182)
-```
-
-We colour the clusters in order to see where they are on the phylogeny. 
-
-```{r color_phylo}
-tipcolor <- rep("black", length(bigtree$tip.label))
-tipcolor[which(bigtree$tip.label %in% tre_CL001$tip.label)] <- "red"
-tipcolor[which(bigtree$tip.label %in% tre_CL002$tip.label)] <- "green"
-tipcolor[which(bigtree$tip.label %in% tre_CL003$tip.label)] <- "blue"
-tipcolor[which(bigtree$tip.label %in% tre_CL004$tip.label)] <- "yellow"
-plot(bigtree, cex = 0.4); tiplabels(col = tipcolor, frame = "none")
 
 ```
+
+Then define some helper functions that helps us extract interesting clades from the big tree.
+
+```{r}
+# Given cluster name, return all case labels except MLRA
+get_cluster_tiplabel <- function(path = ".", name){
+  dna <- read.dna(paste0(path,"run_alignment_", name, ".fas"), format = "fasta")
+  rownames(dna)[rownames(dna) != "MLRA"]
+}
+
+# Get clade on the big tree that corresponds to a given cluster
+# Adapted from Michelle's MRCA_of_interesting_tips.R
+extract_clade_cluster <- function(tree, cluster_tips){
+  if(!all(cluster_tips %in% tree$tip.label))
+    warning("Not all interesting tips exist in the big tree")
+  
+  l <- length(tree$tip.label)
+  # get the numbers of the internal nodes of the tree
+  intNodes <- (l+1):(l+tree$Nnode)
+  # for each internal node, find its descendants:
+  descs <- phangorn::Descendants(tree, node=intNodes, type="tips")
+  # Find number of common tips between given cluster and each of the internal node's tips 
+  num_common_tips <- sapply(intNodes, function(x) {
+    sum(which(tree$tip.label %in% cluster_tips) %in% descs[[x-l]])
+  })
+  
+  ind_max <- which(num_common_tips == max(num_common_tips))
+  out <- vector("integer", length(ind_max))
+  # Choose the smallest clade that contains all interesting tips
+  j <- 1
+  for(i in ind_max){
+    out[j] <- length(extract.clade(tree, i+l)$tip.label)
+    j <- j + 1
+  }
+  extract.clade(tree, ind_max[which.min(out)] + l)
+}
+```
+
+Certain tips in some clusters have unusual cryptic names, these will be corrected.
+
+```{r}
+library(tidyverse)
+names_cl <- c(paste0("CL00", c(5,7,8,9)), paste0("CL0", c(10,11,16,20:26,31,34,39,45,50,62)))
+tiplabel_cl <- map(names_cl, get_cluster_tiplabel, path = "Data/new/")
+
+# Sanity check 
+# Do all tips have format "G" followed by 2-4 digits and nothing else?
+tiplabel_cl[map_lgl(tiplabel_cl, ~ any(!str_detect(.x, "^G\\d{2,4}$")))]
+#
+# What about tips on the big tree?
+bigtree$tip.label[!str_detect(bigtree$tip.label, "^G\\d{2,4}$")]
+# Correct unusual tips
+tiplabel_cl[[4]][2] <- "G788"
+tiplabel_cl[[16]][1] <- "G1238"
+
+tree_cl <- map(tiplabel_cl, extract_clade_cluster, tree = bigtree)
+```
+
+
+We have extracted clades of 20 clusters from the big tree. Together with the dates on the tips, we can estimate the clock rate and rescale the branches, using the R package `treedater`. We then run joint transmission inference on these timed trees.
 
 To prepare input to `treedater`, we take the helper function `get_sts2Treedater` from an earlier analysis, and define a new helper function `read_epidata` to read multiple epi data files.
 
 ```{r}
-library(tidyverse)
 get_sts2Treedater <- function(epi_info, tre){
   sts <- epi_info %>%
     select(`Isolate ID`, `Diagnosis date`) %>% 
     mutate(`Isolate ID` = paste0("G", `Isolate ID`),
            `Diagnosis date` = lubridate::decimal_date(`Diagnosis date`))
   
-  tips_noMatch <- dplyr::setdiff(tre$tip.label, sts$`Isolate ID`)
-  if(length(tips_noMatch) > 0) warning("Found tip label not present in cluster epi data")
+  tips_no_match <- dplyr::setdiff(tre$tip.label, sts$`Isolate ID`)
+  if(length(tips_no_match) > 0) warning("Found tips on the tree that are missing in epi data")
   
-  sts2 <- setNames(sts$`Diagnosis date`, nm = sts$`Isolate ID`) # turn into named vector
-  sts2 <- sts2[tre$tip.label] # include possibly missing tip label
-  if(anyNA(sts2)) warning("Missing cases or sampling times in cluster epi data.")
-  if(length(tips_noMatch) > 0)
-    return(list(sts=sts2, tips_noMatch=tips_noMatch))
+  num_tips <- length(tre$tip.label)
+  sts2 <- set_names(rep(NA, num_tips), tre$tip.label)
+  sts2[sts$`Isolate ID`] <- sts$`Diagnosis date`
+
+  if(anyNA(sts2)) warning("Missing sampling times in cluster epi data.")
+  if(length(tips_no_match) > 0)
+    return(list(sts=sts2, tips_no_match=tips_no_match))
   else
     return(list(sts=sts2))
 }
 
-read_epidata <- function(path = ".", pattern){
-  f <- list.files(path, pattern, full.names = TRUE)
-  map(f, readxl::read_excel)
-}
+read_epidata <- function(path = ".", locate.file = TRUE, pattern = NULL, fnames = NULL){
+  if(locate.file){
+    if(is.null(pattern))
+      stop("You must provide regex to look up files with.")
+    f <- list.files(path, pattern, full.names = TRUE)
+    map(f, readxl::read_excel)
+  }
+  else {
+    if(is.null(fnames))
+      stop("You must provide file names.")
+    map(paste0(path, fnames), readxl::read_excel)
+  }
+}  
 ```
 
-There are cases missing in epi data but present in the phylogeny. Instead of using a very wide time interval as uncertainty bound for each such case, we narrow this bound by examining where the missing case is in the transmission network, and use nearby cases' diagnosis times as a guide. 
 
-```{r, warning=FALSE}
-epi_info <- read_epidata(path = "Data/new/", pattern = "epi_info_CL00[1234]")
-tre <- list(tre_CL001, tre_CL002, tre_CL003, tre_CL004)
-sts <- map2(epi_info, tre, get_sts2Treedater)
-map(sts, "tips_noMatch") # which cases are missing in epi data?
+Once we have read in all the epi data, we then attach the dates to the corresponding tips, but keep in mind that not all dates are known and we may have to supply uncertainty bounds to those tips whose dates were missing. 
+
+```{r}
+epi_cl <- read_epidata("Data/new/", locate.file = FALSE, fnames = paste0("epi_info_", names_cl, ".xlsx"))
+sts_cl <- map2(epi_cl, tree_cl, get_sts2Treedater)
+
+# Which clusters have missing dates?
+which(map_lgl(sts_cl, ~ anyNA(.$sts)))
+names_cl[which(map_lgl(sts_cl, ~ anyNA(.$sts)))]
 ```
+
+Here we check where those cases are in the provided transmission network, and use the average of the nearby cases' diagnosis times as the midpoints of the bounds. The widths of these bounds are chosen to be 1 year. These can all be changed according to what we know about those cases, or even omitted from the analysis if we are unsure.
 
 ```{r fix_missing}
-sts[[2]] <- within(sts[[2]], names(sts)[which(is.na(names(sts)))] <- tips_noMatch)
-sts[[2]] <- within(sts[[2]], sts[tips_noMatch] <- mean(sts[c("G882","G1823","G1449","G1603","G1011")]))
-
-sts[[3]] <- within(sts[[3]], names(sts)[which(is.na(names(sts)))] <- tips_noMatch)
-sts[[3]] <- within(sts[[3]], sts[tips_noMatch] <- mean(sts[c("G145")]))
-
-sts[[4]] <- within(sts[[4]], names(sts)[which(is.na(names(sts)))] <- tips_noMatch)
-sts[[4]] <- within(sts[[4]], sts[tips_noMatch] <- mean(sts[c("G108","G260","G99")]))
+sts_cl[[1]] <- within(sts_cl[[1]], sts[tips_no_match] <- mean(sts[c("G679","G114","G1330")]))
+sts_cl[[5]] <- within(sts_cl[[5]], sts[tips_no_match] <- mean(sts[c("G405","G1180","G1181","G1965","G1446")]))
+sts_cl[[14]] <- within(sts_cl[[14]], sts[tips_no_match] <- mean(sts[c("G1829","G1792","G147")]))
 
 add_uncertainty_bounds <- function(sts, b = 0.5){
   for (i in seq_along(sts)) {
-    if(exists("tips_noMatch", where = sts[[i]])){
-      sts[[i]]$sts_df <- with(sts[[i]], data.frame(lower = sts[tips_noMatch] - b, 
-                                                 upper = sts[tips_noMatch] + b,
-                                                 row.names = tips_noMatch))
+    if(exists("tips_no_match", where = sts[[i]])){
+      sts[[i]]$sts_df <- with(sts[[i]], data.frame(lower = sts[tips_no_match] - b, 
+                                                 upper = sts[tips_no_match] + b,
+                                                 row.names = tips_no_match))
     }
   }
   sts
 }
 
+sts_cl <- add_uncertainty_bounds(sts_cl)
 ```
 
-With all the necessary input, we run `treedater` to date the trees, using strict molecular clock and uncertainty bounds for tips with unknown dates. As `TransPhylo` has to take in positive branch lengths, we again use the strategy of shifting the near-zero branch lengths by a small constant. The end result is a list of timed trees of class `phylo` that can be converted into the format to run `TransPhylo` with.
+With all the necessary input, we run `treedater` to date the trees, using strict molecular clock and uncertainty bounds for tips with unknown dates. **Note for illustration purpose we remove the clusters that `treedater` complains, it is not sure how to deal with them unless we get more information about the original phylogeny such as units of branch lengths, etc** As `TransPhylo` has to take in positive branch lengths, we again use the strategy of shifting the near-zero branch lengths by a small constant. The end result is a list of timed trees of class `phylo` that can be converted into the format to run `TransPhylo` with.
 
 ```{r get_timed_tree, message=FALSE}
+library(treedater)
 tdaterAnalysis <- function(tre, sts, sqlen, ...){
   stopifnot(length(tre) == length(sts))
   out <- vector("list", length(tre))
   for (i in seq_along(sts)) {
-    if(exists("tips_noMatch", where = sts[[i]])){
+    if(exists("tips_no_match", where = sts[[i]])){
       out[[i]] <- dater(tre[[i]], sts[[i]]$sts, sqlen, estimateSampleTimes = sts[[i]]$sts_df, ...)
     }
     else{
@@ -135,26 +175,26 @@ tdaterAnalysis <- function(tre, sts, sqlen, ...){
  out
 }
 
-library(treedater)
-sts <- add_uncertainty_bounds(sts)
-timed_tree <- tdaterAnalysis(tre, sts, 4411532, strictClock = TRUE)
-par(mfrow = c(2,2))
-walk(timed_tree, plot)
+# treedater gives warnings for some clusters, need to come up with a method to deal with this.
+# Now for illustrative purpose omit these clusters
+dater_warning_index <- c(3,4,6,7,8,13,15:18)
+timed_tree_cl <- tdaterAnalysis(tree_cl[-dater_warning_index], sts_cl[-dater_warning_index], 4411532, strictClock = TRUE)
 
 # Fix near-zero branch lengths of timed trees
 fix_edge_length <- function(timed_tree){
   map(timed_tree, function(x) {x$edge.length[dplyr::near(x$edge.length,0)] <- 0.1; x})
 }
-timed_tree <- fix_edge_length(timed_tree)
+timed_tree_cl <- fix_edge_length(timed_tree_cl)
 ```
 
 
-We apply the new routine `infer_multiTTree_shareParam` to the list of timed trees corresponding to clusters CL001-CL004, first sharing all parameters and next without sharing so each cluster is free to choose its own set of parameters. We then plot the distributions of `neg`, `off.r` and `pi` for all clusters and for the case with no parameter sharing (thick grey line). We see that CL003 has on average smaller `neg` than the other three clusters; if `neg` were shared between clusters, then the simulation favours the `neg` supported by the majority of the clusters. The distribution of `off.r` is similar between clusters, and the shared `off.r` overlaps with the individual `off.r` for each cluster. For the probability of sampling `pi`, however, we see two distinct modes corresponding to a low value of `pi` for CL004, and a high value of `pi` for the rest of the clusters; the shared `pi` lies in the high-value regime, which is suported by three out of the four clusters.
+We apply the new routine `infer_multiTTree_shareParam` to the list of timed trees corresponding to clusters `r names_cl`, 
+sharing all parameters.
 
 ```{r transphylo_run, echo=TRUE, results="hide"}
 library(TransPhylo)
-date_last <- map(timed_tree, ~ max(.$sts))
-ptre <- map2(timed_tree, date_last, ptreeFromPhylo)
+date_last_cl <- map(timed_tree_cl, ~ max(.$sts))
+ptree_cl <- map2(timed_tree_cl, date_last_cl, ptreeFromPhylo)
 
 # The following is used temporarily and will be removed when pushing repo upstream
 source("~/Biomath/TransPhylo/R/proposal.R")
@@ -165,7 +205,7 @@ ws.shape <- 1.1; ws.scale <- 1/0.4
 w.shape <- 1.3; w.scale <- 1/0.3
 iters <- 2e4; thin <- 10
 set.seed(1)
-record <- infer_multiTTree_shareParam(ptre, w.shape, w.scale, ws.shape, ws.scale, 
+record_cl <- infer_multiTTree_shareParam(ptree_cl, w.shape, w.scale, ws.shape, ws.scale, 
                                       mcmcIterations = iters, thinning = thin, 
                                       share = c("neg","off.r","off.p","pi"))
 
@@ -174,92 +214,18 @@ discard_burnin <- function(record, burnin = 0.2){
   stopifnot(round(iters*burnin/thin) < length(record[[1]]))
   map(record, function(x) x[round(iters*burnin/thin):length(x)])
 }
-record_small <- discard_burnin(record)
-rm(record)
+record_small_cl <- discard_burnin(record_cl)
+rm(record_cl)
 
-# Plot of shared parameters
+# Simple trace plot of shared parameters
 par(mfrow = c(1,3))
-plot(map_dbl(record_small[[1]], "neg"), type = "l", ylab = "neg", xlab = "MCMC step")
-plot(map_dbl(record_small[[1]], "off.r"), type = "l", ylab = "off.r", xlab = "MCMC step")
-plot(map_dbl(record_small[[1]], "pi"), type = "l", ylab = "pi", xlab = "MCMC step")
+plot(map_dbl(record_small_cl[[1]], "neg"), type = "l", ylab = "neg", xlab = "MCMC step")
+plot(map_dbl(record_small_cl[[1]], "off.r"), type = "l", ylab = "off.r", xlab = "MCMC step")
+plot(map_dbl(record_small_cl[[1]], "pi"), type = "l", ylab = "pi", xlab = "MCMC step")
 
-# Now run TransPhylo with no sharing
-record2 <- infer_multiTTree_shareParam(ptre, w.shape, w.scale, ws.shape, ws.scale, 
-                                      mcmcIterations = iters, thinning = thin, 
-                                      share = NULL)
-record2_small <- discard_burnin(record2)
-rm(record2)
-
-# Tidy output 
-tidy_record <- function(record, name_cl){
-  # name_cl: cluster names such that name_cl[i] corresponds to record[[i]]
-  stopifnot(length(record) == length(name_cl))
-  
-  # Create placeholders for the data
-  dfneg <- matrix(nrow = length(record[[1]]), ncol = length(record))
-  colnames(dfneg) <- name_cl
-  dfneg <- as_tibble(dfneg)
-  dfoff.r <- dfneg
-  dfpi <- dfneg
-  
-  for(i in seq_along(record)){
-    dfneg[, i] <- map_dbl(record[[i]], "neg")
-    dfoff.r[, i] <- map_dbl(record[[i]], "off.r")
-    dfpi[, i] <- map_dbl(record[[i]], "pi")
-  }
-  dfneg <- dfneg %>% gather(key = "cluster", value = "neg")
-  dfoff.r <- dfoff.r %>% gather(key = "cluster", value = "off.r")
-  dfpi <- dfpi %>% gather(key = "cluster", value = "pi")
-  record <- cbind(dfneg, off.r = dfoff.r$off.r, pi = dfpi$pi)
-  record
-}
-tp_noshare <- tidy_record(record2_small, paste0("CL00",1:4))
-tp_share <- tidy_record(record_small[1], "shared")
 ```
 
-```{r visualize}
-# Plot results
-tp_noshare %>% 
-  ggplot(aes(neg)) + 
-  geom_freqpoly(aes(color = cluster), bins = 50) +
-  geom_freqpoly(data = tp_share, color = "grey50", size = 2, bins = 50)
-
-tp_noshare %>%
-  ggplot(aes(off.r)) +
-  geom_freqpoly(aes(color = cluster), bins = 40) +
-  geom_freqpoly(data = tp_share, color = "grey50", size = 2, bins = 40)
-
-tp_noshare %>%
-  ggplot(aes(pi)) +
-  geom_freqpoly(aes(color = cluster), bins = 40) +
-  geom_freqpoly(data = tp_share, color = "grey50", size = 2, bins = 40)
-```
-
-
-We now run the joint inference again, sharing `neg` and `off.r`, but not `pi`.
-
-```{r transphylo_run2, echo=TRUE, results="hide"}
-record3 <- infer_multiTTree_shareParam(ptre, w.shape, w.scale, ws.shape, ws.scale, 
-                                      mcmcIterations = iters, thinning = thin, 
-                                      share = c("neg","off.r","off.p"))
-record3_small <- discard_burnin(record3)
-rm(record3)
-tp_new <- tidy_record(record3_small, paste0("CL00",1:4))
-
-tp_new %>% 
-  ggplot(aes(neg)) + 
-  geom_histogram(bins = 30)
-
-tp_new %>% 
-  ggplot(aes(off.r)) + 
-  geom_histogram(bins = 30)
-
-tp_new %>% 
-  ggplot(aes(pi)) + 
-  geom_freqpoly(aes(color = cluster), bins = 30)
-```
-
-
+We compute the index case distribution for each individual cluster.
 
 ```{r unsamp_index_case}
 prob_samp_src <- function(record){
@@ -271,30 +237,23 @@ prob_samp_src <- function(record){
   }
   mean(probs)
 }
-# map_dbl(record3_small, prob_samp_src)
-tibble(cluster = paste0("CL00", 1:4), 
-       sampled = map_dbl(record3_small, prob_samp_src),
+
+tibble(cluster = names_cl[-dater_warning_index], 
+       sampled = map_dbl(record_small_cl, prob_samp_src),
        unsampled = 1 - sampled) %>%
   gather(index_case, prob, sampled:unsampled) %>%
   ggplot(aes(cluster, prob)) + 
   geom_col(aes(fill = index_case), width = 0.5) +
-  scale_fill_grey() + 
   coord_flip()
+
+# Source case distribution 
+get_src_case_distribution <- function(record){
+  table(map_chr(record, "source"))/length(record)
+}
+
+map(record_small_cl, get_src_case_distribution) %>%
+  set_names(names_cl[-dater_warning_index])
 ```
 
-```{r summarise_ttree}
 
-# Consensus trees
-cons_ttree <- map(record3_small, consTTree, burnin = 0)
-par(mfrow = c(2,2))
-walk(cons_ttree, plotTTree, w.shape, w.scale)
-
-# Most representative trees 
-# https://github.com/xavierdidelot/TransPhylo/blob/master/R/selectTTree.R
-source("~/Biomath/TransPhylo/R/selectTTree/selectTTree.R")
-rpt_ttree <- map_dbl(record3_small, selectTTree, burnin = 0)
-par(mfrow = c(2,2))
-for(k in 1:length(record3_small))
-  plotCTree(record3_small[[k]][[rpt_ttree[k]]]$ctree)
-```
 
