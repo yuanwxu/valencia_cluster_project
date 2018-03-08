@@ -13,8 +13,8 @@ read_bestTree <- function(path = ".", pattern){
   purrr::map(f, ape::read.tree)
 }
 
-cls_mltree <- read_bestTree(path = "~/Biomath/raxml_ng/output", pattern = "bestTree")
-cls_name <- list.dirs("~/Biomath/raxml_ng/output", full.names = FALSE, recursive = FALSE)
+cls_mltree <- read_bestTree(path = "~/Biomath/raxml_ng/output_v2", pattern = "bestTree")
+cls_name <- list.dirs("~/Biomath/raxml_ng/output_v2", full.names = FALSE, recursive = FALSE)
 
 # Unroot trees so that treedater runs
 cls_mltree_unrooted <- map(cls_mltree, unroot)
@@ -26,7 +26,7 @@ cls_mltree_unrooted <- map(cls_mltree_unrooted, function(x) {x$edge.length <- x$
 # the (single) diagnosis date file containing dates of all cluster tips
 # tre --- ML tree
 # clname --- cluster name of tre
-get_sts2Treedater <- function(tre, clname, epi_file = "Data/new/valencia_diagnostic_dates_v2.xlsx"){
+get_sts2Treedater <- function(tre, clname, epi_file = "Data/new_v2/valencia_transphylo_clusters_diagnostic_dates.xlsx"){
   epi <- readxl::read_excel(epi_file)
   sts <- epi %>%
     filter(TR_CL == clname) %>%
