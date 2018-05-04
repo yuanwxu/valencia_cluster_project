@@ -118,3 +118,134 @@ source("~/Biomath/TransPhylo/R/selectTTree/selectTTree.R")
 whichtree <- selectTTree(cls_record_g2[["CL077"]], burnin = 0.2)
 plotCTree(cls_record_g2[["CL077"]][[whichtree]]$ctree)
 plotTTree2(extractTTree(cls_record_g2[["CL077"]][[whichtree]]$ctree))
+
+# Plot the representative combined tree for all clusters and store in a file
+pdf("cls_ctree_g1.pdf")
+for(nm in names(cls_record_g1)){
+  whichtree <- selectTTree(cls_record_g1[[nm]], burnin = 0.2)
+  plotCTree(cls_record_g1[[nm]][[whichtree]]$ctree)
+  title(main = nm)
+}
+dev.off()
+pdf("cls_ctree_g2.pdf")
+for(nm in names(cls_record_g2)){
+  whichtree <- selectTTree(cls_record_g2[[nm]], burnin = 0.2)
+  plotCTree(cls_record_g2[[nm]][[whichtree]]$ctree)
+  title(main = nm)
+}
+dev.off()
+
+# Plot ctree of CL002 with visNetwork
+# source networkPlot() from PHE_TB/transphylo.R
+whichtree <- selectTTree(cls_record_g1[["CL002"]], burnin = 0.2)
+best_tree_cl002 <- cls_record_g1[["CL002"]][[whichtree]]$ctree
+library(visNetwork)
+library(RColorBrewer)
+vninfo <- networkPlot(best_tree_cl002)
+vn <- visNetwork(vninfo$nodes,vninfo$edges, width = "100%") %>% 
+  visLegend(width=0.2,addNodes=vninfo$lnodes,useGroups=F)
+vn %>%
+  visSave("PHE_TB_transmission.html")
+
+
+# Plot generation times and TimestoSampling distribution
+# source getGenerationTimes and getTimesToSampling from transphylo_extras.R
+# A wrapper for plotting histogram generation times for each cluster
+# ... --- parameters to be passed to grid.arrange
+plot_gen_times <- function(cls_record, ...){
+  gs <- list()
+  for(nm in names(cls_record)){
+    gen_times <- map(cls_record[[nm]], ~ getGenerationTimes(.$ctree))
+    gs[[nm]] <- ggplot(data.frame(gen_times = unlist(gen_times)), aes(gen_times)) +
+      geom_histogram(bins = 20) + ggtitle(nm)  
+    
+    # The use of data.frame() in ggplot creates a new plot env for each ggplot object 
+    # See here https://stackoverflow.com/questions/39799886/r-assigning-ggplot-objects-to-list-in-loop/39800861#39800861
+    # for explanation of why the following doesn't work properly 
+    # https://stackoverflow.com/questions/49978925/saving-ggplot-object)
+    #gs[[nm]] <- qplot(unlist(gen_times), geom = "histogram", main = nm)
+  }
+  gridExtra::grid.arrange(grobs = gs, ...)
+}
+
+# A wrapper for plotting histogram times-to-sampling for each cluster
+plot_times_to_samp <- function(cls_record, ...){
+  gs <- list()
+  for(nm in names(cls_record)){
+    times_to_samp <- map(cls_record[[nm]], ~ getTimesToSampling(.$ctree))
+    gs[[nm]] <- ggplot(data.frame(times_to_samp = unlist(times_to_samp)), aes(times_to_samp)) +
+      geom_histogram(bins = 20) + ggtitle(nm)  
+  }
+  gridExtra::grid.arrange(grobs = gs, ...)
+}
+plot_gen_times(cls_record_g1, ncol = 3)
+plot_gen_times(cls_record_g2, ncol = 3)  
+plot_times_to_samp(cls_record_g1, ncol = 3)
+plot_times_to_samp(cls_record_g2, ncol = 3)
+
+
+# Get posterior summary table for generation and sampling times for all clusters
+get_table_gtst <- function(cls_record){
+  tibble(cluster_id = names(cls_record), 
+         gen_time = map(cls_record, ~ sapply(lapply(., function(x) getGenerationTimes(x$ctree)), mean)),
+         samp_time = map(cls_record, ~ sapply(lapply(., function(x) getTimesToSampling(x$ctree)), mean))) %>%
+    mutate(mean_gt = map_dbl(gen_time, mean), sd_gt = map_dbl(gen_time, sd)) %>%
+    mutate(mean_st = map_dbl(samp_time, mean), sd_st = map_dbl(samp_time, sd)) %>%
+    select(-gen_time, -samp_time)  
+}
+get_table_gtst(cls_record_g1)
+get_table_gtst(cls_record_g2)
+
+# Plot number of unsampled cases for each cluster
+plot_num_unsamp <- function(cls_record, ...){
+  gs <- list()
+  for(nm in names(cls_record)){
+    num_unsamp <- get_num_unsampled(cls_record[[nm]])
+    gs[[nm]] <- ggplot(data.frame(num_unsamp = num_unsamp), aes(num_unsamp)) +
+      geom_bar() + ggtitle(nm)
+  }
+  gridExtra::grid.arrange(grobs = gs, ...)
+}
+plot_num_unsamp(cls_record_g1)
+plot_num_unsamp(cls_record_g2)
+
+# Get posterior summary table for number of unsampled cases
+# source get_num_unsampled() from analysis4.Rmd
+get_table_num_unsamp <- function(cls_record){
+  tibble(cluster_id = names(cls_record),
+         num_unsamp = map(cls_record, get_num_unsampled)) %>%
+    mutate(mean_num_unsamp = map_dbl(num_unsamp, mean), sd_num_unsamp = map_dbl(num_unsamp, sd)) %>%
+    select(-num_unsamp)
+}
+get_table_num_unsamp(cls_record_g1)
+get_table_num_unsamp(cls_record_g2)
+
+
+# Function to get max root-to-tip distance from a ctree, used in plotting against number of unsampled cases
+get_max_rtt <- function(ctree){
+  ttree <- extractTTree(ctree)
+  ns <- length(ttree$nam) # number of sampled cases
+  ttree <- ttree$ttree
+  src <- which(ttree[, 3] == 0)
+  max(ttree[1:ns,2] - ttree[src,1])
+}
+
+# Plot rtt distance with mean number of unsampled cases for two groups of clusters
+plot_rtt_and_mean_unsamp <- function(cls_record1, cls_record2){
+  tibble1 <- tibble(cluster_id = names(cls_record1), 
+                    group_id = "G1",
+                    max_rtt_dist = map(cls_record1, ~ sapply(., function(x) get_max_rtt(x$ctree))),
+                    mean_max_rtt_dist = map_dbl(max_rtt_dist, mean),
+                    mean_num_unsamp = get_table_num_unsamp(cls_record1)$mean_num_unsamp) %>%
+    select(-max_rtt_dist)
+  tibble2 <- tibble(cluster_id = names(cls_record2), 
+                    group_id = "G2",
+                    max_rtt_dist = map(cls_record2, ~ sapply(., function(x) get_max_rtt(x$ctree))),
+                    mean_max_rtt_dist = map_dbl(max_rtt_dist, mean),
+                    mean_num_unsamp = get_table_num_unsamp(cls_record2)$mean_num_unsamp) %>%
+    select(-max_rtt_dist)
+  ggplot(data = rbind(tibble1, tibble2), aes(mean_max_rtt_dist, mean_num_unsamp)) +
+    geom_point(aes(color = group_id))
+}
+plot_rtt_and_mean_unsamp(cls_record_g1, cls_record_g2)
+
