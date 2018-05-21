@@ -118,7 +118,9 @@ record_CI <- get_CI(record_tidy)
 record_CI <- record_CI %>%
   mutate(exact = rep(c(100/365, 1.5, 0.8), each = 3))
 
+```
 
+```{r plot}
 # Plot
 ggplot(record_tidy, aes(neg)) +
   geom_histogram() +
@@ -146,10 +148,8 @@ ggplot(record_tidy, aes(pi)) +
                  color = "blue", size = 2) +
   geom_point(data = filter(record_CI, param == "pi"), 
              aes(exact, 0), color = "red", size = 2)
-
-
-
 ```
+
 
 The posterior samples of the parameters are shown, as well as the credible intervals, calculated as the 95% quantile interval. The true values of the parameters are shown as red dots.
 

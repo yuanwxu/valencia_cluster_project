@@ -249,3 +249,22 @@ plot_rtt_and_mean_unsamp <- function(cls_record1, cls_record2){
 }
 plot_rtt_and_mean_unsamp(cls_record_g1, cls_record_g2)
 
+
+# Transmission before symptom onset?
+source("~/Biomath/PHE_TB/analysis_functions.R")
+ttree_cl2 <- map(cls_record_g1[["CL002"]], ~ extractTTree(.$ctree))
+df_cl2 <- tibble(cluster_id = "CL002", 
+       host = ttree_cl2[[1]]$nam,
+       mean_inf_time = map_dbl(host, get_mean_inftime, record = cls_record_g1[["CL002"]], ttrees = ttree_cl2),
+       mean_gen_time = map_dbl(host, get_mean_gentime, record = cls_record_g1[["CL002"]], ttrees = ttree_cl2, 
+                               type = "min"),
+       mean_first_transm_time = mean_inf_time + mean_gen_time
+       )
+epi_cl2 <- readxl::read_excel("~/Biomath/MLRA/clusters_alignments_valencia/Data/new/epi_info_CL002.xlsx")
+df_cl2 <- epi_cl2 %>% 
+  mutate(host = paste0("G", `Isolate ID`)) %>%
+  rename(symp_onset = `Symptomps onset`) %>%
+  right_join(df_cl2, by = "host") %>% 
+  select(cluster_id, host, mean_inf_time, mean_first_transm_time, symp_onset) %>%
+  mutate(symp_onset = lubridate::decimal_date(symp_onset))
+
