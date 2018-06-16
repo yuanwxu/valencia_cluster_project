@@ -12,6 +12,8 @@
 #' @param startOff.r Starting value of parameter off.r
 #' @param startOff.p Starting value of parameter off.p
 #' @param startPi Starting value of sampling proportion pi
+#' @param prior_pi_a First shape parameter of Beta prior for pi
+#' @param prior_pi_b Second shape parameter of Beta prior for pi
 #' @param updateNeg Whether of not to update the parameter Ne*g
 #' @param updateOff.r Whether or not to update the parameter off.r
 #' @param updateOff.p Whether or not to update the parameter off.p
@@ -26,7 +28,7 @@
 #' @author Yuanwei Xu
 #' @export
 infer_multiTTree_shareParam = function(ptree_lst,w.shape=2,w.scale=1,ws.shape=w.shape,ws.scale=w.scale,mcmcIterations=1000,
-                      thinning=1,startNeg=100/365,startOff.r=1,startOff.p=0.5,startPi=0.5,
+                      thinning=1,startNeg=100/365,startOff.r=1,startOff.p=0.5,startPi=0.5,prior_pi_a=5,prior_pi_b=1,
                       updateNeg=TRUE,updateOff.r=TRUE,updateOff.p=FALSE,updatePi=TRUE,
                       share=NULL,
                       startCTree_lst=rep(NA,length(ptree_lst)),updateTTree=TRUE,optiStart=TRUE,dateT=Inf) {
@@ -94,12 +96,14 @@ infer_multiTTree_shareParam = function(ptree_lst,w.shape=2,w.scale=1,ws.shape=w.
     }
     
     if (("pi" %in% not_share) && updatePi) {
-      #Metropolis update for pi, assuming Unif(0.01,1) prior 
+      # use a beta prior
       pi2 <- pi + (runif(1)-0.5)*0.1
       if (pi2<0.01) pi2=0.02-pi2
       if (pi2>1) pi2=2-pi2
       pTTree2 <- probTTree(ttree$ttree,off.r,off.p,pi2,w.shape,w.scale,ws.shape,ws.scale,dateT) 
-      if (log(runif(1)) < pTTree2-pTTree)  {pi <- pi2;pTTree <- pTTree2}       
+      log_beta_ratio <- (prior_pi_a - 1) * log(pi2) + (prior_pi_b - 1) * log(1 - pi2) -
+        (prior_pi_a - 1) * log(pi) - (prior_pi_b - 1) * log(1 - pi)
+      if (log(runif(1)) < pTTree2-pTTree + log_beta_ratio)  {pi <- pi2;pTTree <- pTTree2}       
     }
     
     list(ctree=ctree, pTTree=pTTree, pPTree=pPTree, neg=neg, off.r=off.r, off.p=off.p, pi=pi)
@@ -150,14 +154,16 @@ infer_multiTTree_shareParam = function(ptree_lst,w.shape=2,w.scale=1,ws.shape=w.
     
     if(("pi" %in% share) && updatePi){
       pi <- pi_lst[[1]]
-      #Metropolis update for pi, assuming Unif(0.01,1) prior 
+      # use a beta prior
       pi2 <- pi + (runif(1)-0.5)*0.1
       if (pi2<0.01) pi2=0.02-pi2
       if (pi2>1) pi2=2-pi2
       pTTree <- purrr::flatten_dbl(pTTree_lst)
       pTTree2 <- purrr::pmap_dbl(list(ttree=ttree_lst, rOff=off.r_lst, pOff=off.p_lst), probTTree, pi=pi2, 
                                  shGen=w.shape, scGen=w.scale, shSam=ws.shape, scSam=ws.scale, dateT=dateT)
-      if (log(runif(1)) < sum(pTTree2)-sum(pTTree)){
+      log_beta_ratio <- (prior_pi_a - 1) * log(pi2) + (prior_pi_b - 1) * log(1 - pi2) -
+        (prior_pi_a - 1) * log(pi) - (prior_pi_b - 1) * log(1 - pi)
+      if (log(runif(1)) < sum(pTTree2) - sum(pTTree) + ntree * log_beta_ratio){
         pi_lst <- as.list(rep(pi2, ntree))
         pTTree_lst <- as.list(pTTree2)
       } 

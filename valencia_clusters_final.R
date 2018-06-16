@@ -96,7 +96,7 @@ for(i in seq_along(lst_cls_timetree)){
 }
 source("~/Biomath/TransPhylo/R/proposal.R")
 source("~/Biomath/TransPhylo/R/computeHost.R")
-source("~/Biomath/TransPhylo/R/infer_multiTTree_shareParam.R")
+source("infer_multiTTree_shareParam.R")
 
 ws.shape <- 1.1; ws.scale <- 1/0.4
 w.shape <- 1.3; w.scale <- 1/0.3
