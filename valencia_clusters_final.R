@@ -125,7 +125,7 @@ discard_burnin <- function(record_lst, burnin = 0.2){
 
 lst_cls_record2 <- vector("list", length(lst_cls_record)) # to store record with burnin disgarded
 for(i in seq_along(lst_cls_record)){
-  lst_cls_record2[[i]] <- discard_burnin(lst_cls_record[[i]])  
+  lst_cls_record2[[i]] <- discard_burnin(lst_cls_record[[i]], burnin = 0.25)  
 }
 
 
