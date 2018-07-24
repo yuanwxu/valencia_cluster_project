@@ -346,15 +346,21 @@ visz_transm_tree <- function(ttree, ncolors = 5, use_visn = TRUE, title = NULL){
 # consensus tree from the combined posterior
 visz_transm_tree(consTTree(cls_record2[["CL045"]], burnin = 0))
 
-# My select_MAP_tree function that simply returns the maximum a-posteriori transmission tree
-# This may not be useful as it tends to return trees with no unsampled cases(higher values of likelihood 
-# because less terms present) --- not useful in rj-mcmc?
-#select_MAP_tree <- function(record, burnin = 0.2, plot = FALSE){
-#  log_pos_prob <- map_dbl(record, "pTTree") + map_dbl(record, "pPTree")
-#  if(plot)
-#    plot(log_pos_prob, xlab = "iters")
-#  which.max(log_pos_prob)
-#}
+# My select_weighted_MAP_tree function that returns the weighted maximum a-posteriori transmission tree
+# where the weight for each tree is given by the posterior probability of #unsampled present in that tree
+# For PHE datasest, MAP tree = weighted MAP tree, so no change even each tree is weighted by the prob #unsampled 
+# in that tree. Consider introducing a hyperparam lambda in front of log: lambda * log(ct_unsamp / length(unsamp)),
+# where lambda > 1, this results in exponential decay, as the prob. decrease, and this does change the tree
+select_weighted_MAP_tree <- function(record, ttrees = NULL, burnin = 0.2){
+  log_pos_prob <- map_dbl(record, "pTTree") + map_dbl(record, "pPTree")
+  
+  unsamp <- get_num_unsampled(record, ttrees)
+  df <- data.frame(uns = unsamp) %>% dplyr::count(uns)
+  ind <- match(unsamp, df$uns) # know which indices to look for in the count table 
+  ct_unsamp <- df[ind, ] %>% dplyr::pull(n) # select as vector
+  log_pos_prob <- log_pos_prob + log(ct_unsamp / length(unsamp)) # weight by freq of #unsampled
+  which.max(log_pos_prob)
+}
 
 
 
@@ -364,23 +370,35 @@ cls_infector_freq <- map2(cls_record2, cls_ttrees, get_infector_freq)
 # Plot diagramm showing strength of infection between cases in a cluster
 # df --- the data frame of infector frequences for the cluster, returned from get_infector_freq()
 # magnify_edge --- the factor used to magnify the width of edges, increase this if low probability edges are not visible
+# alt_label --- alternative label, TRUE if want to use natural sequence (1,2,...) as labels. This is useful if either
+#               the labels are too long, or for data privacy and confidential reasons.
 # ... --- parameters to be passed on to render_graph()
-plot_infector_freq <- function(df, magnify_edge = 5, ...){
-  nodes <- unique(df$infector)
+# If alt_label is TRUE, will return a list containing the graph object and the original labels
+plot_infector_freq <- function(df, magnify_edge = 5, alt_label = FALSE, ...){
+  nodes <- unique(c(df$host_id, df$infector))
   node_df <- create_node_df(n = length(nodes),
                             label = nodes,
-                            chape = "circle",
+                            shape = "circle",
                             fillcolor = dplyr::case_when(nodes == "0" ~ "grey", 
                                                          nodes == "Unsampled" ~ "lightblue",
-                                                         TRUE ~ "blue"))
+                                                         TRUE ~ "lavender"))
+  if(alt_label){
+    node_df$label <- as.character(seq_along(nodes))
+    node_df$label[which(nodes == "Unsampled")] <- "Unsampled"
+    node_df$label[which(nodes == "0")] <- "0"
+  }
+                                  
   from <- match(df$infector, nodes)
   to <- match(df$host_id, nodes)
   edge_df <- create_edge_df(from = from, 
                             to = to,
                             color = "gray40",
                             penwidth = df$freq * magnify_edge)
-  create_graph(node_df, edge_df) %>%
-    render_graph(...)
+  g <- create_graph(node_df, edge_df) 
+  if(alt_label)
+    return(list(graph = g, labels = nodes))
+  else
+    render_graph(g, ...) # show graph
 }
 plot_infector_freq(cls_infector_freq[["CL045"]])
 plot_infector_freq(cls_infector_freq[["CL016"]])
