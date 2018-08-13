@@ -323,28 +323,38 @@ gridExtra::grid.arrange(grobs = cls_plt_first_dgns[1:6], ncol = 3)
 #  ==== Visualize trees with diagrammeR ====
 library(DiagrammeR)
 # ncolors --- how many colors should be used to distinguish different infection times
-# title --- optional title, only useful when using the default output type (use_visn = FALSE)
-visz_transm_tree <- function(ttree, ncolors = 5, use_visn = TRUE, title = NULL){
+# Return the graph for rendering and further modifications
+visz_transm_tree <- function(ttree, ncolors = 5, alt_label = FALSE){
   ncases <- nrow(ttree$ttree)
   nunsamp <- ncases - length(ttree$nam)
   node_df <- create_node_df(n = ncases, label = c(ttree$nam, rep("Unsampled", nunsamp)),
                             shape = rep(c("circle","rectangle"), c(ncases - nunsamp, nunsamp)),
                             time_inf = ttree$ttree[,1],
                             time_samp = ttree$ttree[,2])
+  if(alt_label){
+    node_df$label[1:length(ttree$nam)] <- as.character(1:length(ttree$nam))
+  }
+  
   edge_df <- create_edge_df(from = ttree$ttree[,3], to = 1:ncases)
+  
+  # Delete from edge_df the row where infector is 0
+  edge_df <- edge_df[-which(edge_df$from == 0), ]
   graph <- create_graph(node_df, edge_df)
+
+  # Not working yet, wait to see if the package maintainer fix the bug
+  # pal <- colorRampPalette(RColorBrewer::brewer.pal(9,"Blues"))(ncolors) # generate 100 blues
+  # Source: https://www.r-bloggers.com/r-using-rcolorbrewer-to-colour-your-figures-in-r/
+
   graph <- graph %>% 
     colorize_node_attrs(node_attr_from = time_inf, node_attr_to = fillcolor, 
                         cut_points = seq(min(node_df$time_inf), max(node_df$time_inf)+0.1, length.out = ncolors),
-                        palette = "Blues")
-  if(!use_visn)
-    render_graph(graph, title = title)
-  else
-    render_graph(graph, output = "visNetwork")
+                        palette = "YlOrRd")
+  graph
 }
 
 # consensus tree from the combined posterior
-visz_transm_tree(consTTree(cls_record2[["CL045"]], burnin = 0))
+visz_transm_tree(consTTree(cls_record2[["CL045"]], burnin = 0)) %>%
+  render_graph(title = "CL045")
 
 # My select_weighted_MAP_tree function that returns the weighted maximum a-posteriori transmission tree
 # where the weight for each tree is given by the posterior probability of #unsampled present in that tree
