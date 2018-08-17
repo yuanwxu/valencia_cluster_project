@@ -51,6 +51,7 @@ get_sts2Treedater <- function(tre, clname, epi_file = "Data/new_v2/valencia_tran
 }
 
 cls_sts <- map2(cls_mltree_unrooted, cls_name, get_sts2Treedater)
+names(cls_sts) <- cls_name
 
 # Generate time-trees from a variety of clock rates, sampled from log-normal distribution with suitable 
 # mean and variance.  Source tdaterAnalysis from analysis4.Rmd
@@ -125,7 +126,7 @@ discard_burnin <- function(record_lst, burnin = 0.2){
 
 lst_cls_record2 <- vector("list", length(lst_cls_record)) # to store record with burnin disgarded
 for(i in seq_along(lst_cls_record)){
-  lst_cls_record2[[i]] <- discard_burnin(lst_cls_record[[i]], burnin = 0.25)  
+  lst_cls_record2[[i]] <- discard_burnin(lst_cls_record[[i]], burnin = 0.5)  
 }
 
 
@@ -195,23 +196,90 @@ for(i in seq_along(cls_record2)){ # extract ttree from record to save computatio
   cls_ttrees[[i]] <- map(cls_record2[[i]], ~ extractTTree(.$ctree))
 }
 
-cl045_transmtime_df <- get_transmtime_df(cls_record2[["CL045"]], cls_ttrees[["CL045"]], names(lst_cls_record2))
-cl045_epi <- readxl::read_excel("~/Biomath/MLRA/clusters_alignments_valencia/Data/new/epi_info_CL045.xlsx")
+cls_transmtime_df <- map2(cls_record2, cls_ttrees, get_transmtime_df, rates = names(lst_cls_record2))
 
-# Get symptime onset time for a cluster from epi data
-# epi --- epi data of a cluster
-# hosts --- character vector of host id's, the "nam" component of "ctree"
-get_symptime_df <- function(epi, hosts){
-  stime <- lubridate::decimal_date(with(epi, setNames(`Symptomps onset`, paste0("G", `Isolate ID`))))
-  tibble(host_id = hosts, symptime = stime[host_id])
+# Read epi data for each cluster
+# path --- path to directory
+# pattern --- file name regex, same as in list.files
+# cls_name --- char vector, names of clusters for which epi is desired
+# ... --- other params passed on to list.files
+read_epi <- function(path = ".", pattern, cls_name){
+  f <- list.files(path, pattern)
+  f <- f[f %in% paste0("epi_info_", cls_name, ".xlsx")]
+
+  out <- purrr::map(paste0(path, f), readxl::read_excel, na = c("", "NO DATE"))
+  names(out) <- map_chr(out, ~ .$`Cluster number`[1])
+  out
 }
-cl045_symptime_df <- get_symptime_df(cl045_epi, hosts = cls_record2[["CL045"]][[1]]$ctree$nam)
 
-ggplot(cl045_transmtime_df, aes(x = transmtime)) +
-  geom_freqpoly(aes(color = rate), binwidth = 0.1) +
-  facet_wrap(~host_id, scales = "free_y") + # because count can differ a lot across hosts and rates
-  geom_vline(aes(xintercept = symptime), data = cl045_symptime_df, linetype = "dashed", size = 1.5, color = "blue") +
-  labs(x = "Time of first transmission event", title = "CL045")
+cls_epi <- read_epi(path = "~/Biomath/MLRA/clusters_alignments_valencia/Data/new/", 
+                    pattern = "epi_info_CL", cls_name)
+
+#cl045_transmtime_df <- get_transmtime_df(cls_record2[["CL045"]], cls_ttrees[["CL045"]], names(lst_cls_record2))
+#cl045_epi <- readxl::read_excel("~/Biomath/MLRA/clusters_alignments_valencia/Data/new/epi_info_CL045.xlsx")
+
+# Helper function to get reference time points: symptime onset and diagnosis/sampling time for a cluster 
+# epi --- epi data of a cluster
+# sts --- sampling/diagnosis times for the cluster returned from get_sts2Treedater
+# hosts --- character vector of host id's in the cluster, the "nam" component of "ctree"
+get_symp_dx_time_df <- function(epi, sts, hosts){
+  stime <- lubridate::decimal_date(with(epi, setNames(`Symptomps onset`, paste0("G", `Isolate ID`))))
+  tibble(host_id = hosts, symp_time = stime[host_id], dgns_time = sts$sts[host_id])
+}
+
+cls_hosts <- map(cls_record2, ~ .x[[1]]$ctree$nam)
+cls_times_df <- pmap(list(cls_epi, cls_sts, cls_hosts), get_symp_dx_time_df)
+cls_times_df <- map(cls_times_df, gather, key = "key", value = "value", symp_time:dgns_time)
+
+
+#cl045_times_df <- get_symp_dx_time_df(cl045_epi, cls_sts[["CL045"]], hosts = cls_record2[["CL045"]][[1]]$ctree$nam)
+#cl045_times_df <- cl045_times_df %>%
+#  gather("key", "value", symp_time:dgns_time)
+
+# Box plot of time of first transmission for one clock rate
+# r --- char, which clock rate to show
+# show_cls --- char vector, clusters to show
+plot_transmtime <- function(cls_transmtime_df, cls_reftimes_df, r, show_cls = names(cls_transmtime_df)){
+  stopifnot(all.equal(names(cls_reftimes_df), names(cls_transmtime_df)))
+  stopifnot(r %in% unique(cls_transmtime_df[[1]]$rate))
+
+  cls_name <- names(cls_transmtime_df)
+  df <- map2(cls_transmtime_df, cls_name, ~ mutate(.x, cluster_id = .y)) %>%
+    map_dfr(~.) # add column cluster_id then rbind all data frames
+  
+  df_ref <- map2(cls_reftimes_df, cls_name, ~ mutate(.x, cluster_id = .y)) %>%
+    map_dfr(~.) # add column cluster_id then rbind all data frames
+  
+  df %>% 
+    filter(rate == r, cluster_id %in% show_cls) %>%
+    na.omit() %>%
+    ggplot(aes(x = host_id, y = transmtime)) +
+    geom_boxplot(varwidth = TRUE) +
+    facet_wrap(~ cluster_id, scales = "free") +
+    geom_point(aes(y = value, shape = key, color = key), 
+               data = df_ref %>% filter(cluster_id %in% show_cls), size = 3) +
+    scale_shape_manual(values = c(17,15)) +
+    labs(x = "Host", y = "Time", shape = "", color = "") + coord_flip()
+}
+
+plot_transmtime(cls_transmtime_df, cls_times_df, "0.363", show_cls = cls_name[1:6]) 
+
+
+#cl045_transmtime_df %>%
+#  filter(rate == "0.363") %>%
+#  na.omit() %>%
+#  ggplot(aes(x = host_id, y = transmtime)) +
+#  geom_boxplot(varwidth = TRUE) +
+#  geom_point(aes(y = value, shape = key, color = key), data = cl045_times_df, size = 4) +
+#  scale_shape_manual(values = c(17,15)) +
+#  labs(x = "Host", y = "Time", title = "Box plot of time of first transmission event in CL045", shape = "", color = "")
+
+## THE OLD PLOT SHOWING ALL RATES
+#ggplot(cl045_transmtime_df, aes(x = transmtime)) +
+#  geom_freqpoly(aes(color = rate), binwidth = 0.1) +
+#  facet_wrap(~host_id, scales = "free_y") + # because count can differ a lot across hosts and rates
+#  geom_vline(aes(xintercept = symptime), data = cl045_symptime_df, linetype = "dashed", size = 1.5, color = "blue") +
+#  labs(x = "Time of first transmission event", title = "CL045")
        
 
 # Function to plot historgrams of first transmission time or return invisibly the posterior fraction of 
@@ -244,10 +312,10 @@ transm_before_symptom <- function(record, symptime, plot = TRUE, ...){
   invisible(list(plt=plt, fni=fni/length(record)))
 }
 
-tbs_cl2 <- transm_before_symptom(cls_record2[["CL002"]], symptime_cl2, ncol = 4)
-tibble(host = names(tbs_cl2$fni), fni = tbs_cl2$fni) %>%
-  ggplot(aes(reorder(host, -fni), fni)) +
-  geom_col() + ylab("Probability of sampling before infecting others") + xlab("Host")
+#tbs_cl2 <- transm_before_symptom(cls_record2[["CL002"]], symptime_cl2, ncol = 4)
+#tibble(host = names(tbs_cl2$fni), fni = tbs_cl2$fni) %>%
+#  ggplot(aes(reorder(host, -fni), fni)) +
+#  geom_col() + ylab("Probability of sampling before infecting others") + xlab("Host")
 
 
 
