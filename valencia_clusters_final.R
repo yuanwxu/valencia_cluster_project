@@ -358,6 +358,52 @@ plot_index_first_dgns <- function(record, sts, title, max_to_show = NULL){
     ggtitle(title)
 }
 
+# Get index case data for all clusters
+get_cls_index_df <- function(cls_record, cls_ttrees = NULL, cls_sts){
+  if(is.null(cls_ttrees)){
+    cls_ttrees <- setNames(vector("list", length(cls_record)), names(cls_record))
+    for(i in seq_along(cls_record)){ 
+      cls_ttrees[[i]] <- map(cls_record[[i]], ~ extractTTree(.$ctree))
+    }
+  }
+  
+  cls_dtime <- map(cls_sts, ~ c(.$sts, Unsampled = NA))
+  lst_df <- vector("list", length(cls_record))
+  for(i in seq_along(lst_df)){
+    lst_df[[i]] <- tibble(cluster_id = names(cls_record)[i], 
+                          index_case = map_chr(cls_record[[i]], "source")) %>%
+      count(cluster_id, index_case, sort = TRUE) %>%
+      mutate(dgns_time = map_dbl(index_case, ~ cls_dtime[[i]][[.]]))
+  }
+  map_dfr(lst_df, ~ .)
+}
+
+cls_index_df <- get_cls_index_df(cls_record2, cls_ttrees, cls_sts)
+
+# Showing index case distribution of all clusters in stacked bar chart
+# max_case --- max #cases to show for each cluster
+# min_n --- only cases whose counts are greater than *min_n* will be shown, this is more useful than
+#           max_case because it ensures that the host label will be visible within each stacked bar
+# cls --- char vector, clusters to show in plot, default all clusters
+plot_index_all <- function(df, max_case = NULL, min_n = 1, cls = cls_name){
+  if(!is.null(max_case)){
+    lst_df <- split(df, df$cluster_id)
+    len <- map_int(lst_df, nrow)
+    ns <- ifelse(max_case < len, max_case, len)
+    df <- map2(lst_df, ns, ~ slice(.x, 1:.y)) %>%
+      map_dfr(~.)
+  }
+  
+  df %>%
+    mutate(index_case = ifelse(index_case == "Unsampled", "U", index_case)) %>% # for concise symbol in plotting
+    filter(cluster_id %in% cls, n > min_n) %>%
+    ggplot(aes(cluster_id, n)) + 
+    geom_col(aes(fill = dgns_time), color = "black") +
+    geom_text(aes(label = index_case), position = position_stack(vjust = 0.5))
+}
+
+plot_index_all(cls_index_df, min_n = 60, cls = cls_name[1:10]) # show all cases with greater than 3% posterior counts
+
 
 # Alternative pie chart
 plot_index_first_dgns_pie <- function(record, sts, title){
