@@ -520,7 +520,7 @@ plot_infector_freq <- function(df, magnify_edge = 5, alt_label = FALSE, ...){
                             penwidth = df$freq * magnify_edge)
   g <- create_graph(node_df, edge_df) 
   if(alt_label)
-    return(list(graph = g, labels = nodes))
+    return(list(graph = g, labels = nodes, from = df$infector, to = df$host_id))
   else
     render_graph(g, ...) # show graph
 }
