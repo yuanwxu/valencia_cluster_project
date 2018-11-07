@@ -262,7 +262,57 @@ plot_transmtime <- function(cls_transmtime_df, cls_reftimes_df, r, show_cls = na
     labs(x = "Host", y = "Time", shape = "", color = "") + coord_flip()
 }
 
-plot_transmtime(cls_transmtime_df, cls_times_df, "0.363", show_cls = cls_name[1:6]) 
+# Plot median first transmission event time along with errbars of .25 and .75 quantile, 
+# colored by prob of transmission at all
+plot_transmtime2 <- function(cls_transmtime_df, cls_reftimes_df, r, show_cls = names(cls_transmtime_df),
+                             plot = TRUE){
+  stopifnot(all.equal(names(cls_reftimes_df), names(cls_transmtime_df)))
+  stopifnot(r %in% unique(cls_transmtime_df[[1]]$rate))
+  
+  cls_name <- names(cls_transmtime_df)
+  df <- map2(cls_transmtime_df, cls_name, ~ mutate(.x, cluster_id = .y)) %>%
+    map_dfr(~.) # add column cluster_id then rbind all data frames
+  
+  df_ref <- map2(cls_reftimes_df, cls_name, ~ mutate(.x, cluster_id = .y)) %>%
+    map_dfr(~.) # add column cluster_id then rbind all data frames
+  
+  df <- df %>% group_by(rate, cluster_id, host_id) %>% 
+    summarise(prob_transm = sum(!is.na(gentime)) / n(), 
+              transm_time = list(quantile(transmtime, na.rm = TRUE))) %>%
+    mutate(transm_time_lowerq = map_dbl(transm_time, "25%"),
+           transm_time_median = map_dbl(transm_time, "50%"),
+           transm_time_upperq = map_dbl(transm_time, "75%"))
+  if(plot){
+    df %>% 
+      filter(rate == r, cluster_id %in% show_cls) %>%
+      ggplot() +
+      geom_errorbarh(aes(y=host_id, xmin=transm_time_lowerq, xmax=transm_time_upperq, 
+                         color = prob_transm)) +
+      geom_point(aes(transm_time_median, host_id, color=prob_transm), size = 2) +
+      geom_point(aes(x = value, y = host_id, shape = key),
+                 data = df_ref %>% filter(cluster_id %in% show_cls), size = 2) +
+      scale_shape_manual(values = c(0,2)) +
+      facet_wrap(~cluster_id, scales = "free_y") +
+      labs(x = "Time", y = "Host", shape = "key")
+  }
+  else{
+    return(df)
+  }
+}
+
+plot_transmtime2(cls_transmtime_df, cls_times_df, "0.363", show_cls = cls_name[1:6]) 
+
+df <- plot_transmtime2(cls_transmtime_df, cls_times_df, "0.363", plot = FALSE) 
+df <- df %>% filter(rate == "0.363", prob_transm > 0.6)
+ggplot(df) + geom_errorbarh(aes(y=host_id, xmin=transm_time_lowerq, xmax=transm_time_upperq)) + 
+  geom_point(aes(transm_time_median, host_id, color=prob_transm), size = 3) +
+  geom_point(aes(x = value, y = host_id, shape = key),
+             data = df_ref %>% filter(host_id %in% df$host_id), size = 4) +
+  scale_shape_manual(values = c(0,2)) +
+  labs(x = "Time", y = "Host", 
+       title = "Median time of first transmissions", 
+       subtitle = "for cases with posterior probability of transmitting greater than 0.6",
+       shape = "key")
 
 
 #cl045_transmtime_df %>%
@@ -404,6 +454,13 @@ plot_index_all <- function(df, max_case = NULL, min_n = 1, cls = cls_name){
 
 plot_index_all(cls_index_df, min_n = 60, cls = cls_name[1:10]) # show all cases with greater than 3% posterior counts
 
+# Display bar charts separately for each cluster
+cls_index_df %>%
+  filter(cluster_id %in% cls_name[1:9], n > 60) %>%
+  ggplot(aes(index_case, n)) +
+  geom_col(aes(fill = dgns_time)) +
+  facet_wrap(~cluster_id, scales = "free_x") +
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1))
 
 # Alternative pie chart
 plot_index_first_dgns_pie <- function(record, sts, title){
@@ -505,7 +562,8 @@ plot_infector_freq <- function(df, magnify_edge = 5, alt_label = FALSE, ...){
                             shape = "circle",
                             fillcolor = dplyr::case_when(nodes == "0" ~ "grey", 
                                                          nodes == "Unsampled" ~ "lightblue",
-                                                         TRUE ~ "lavender"))
+                                                         TRUE ~ "lavender"),
+                            fontcolor = "black")
   if(alt_label){
     node_df$label <- as.character(seq_along(nodes))
     node_df$label[which(nodes == "Unsampled")] <- "Unsampled"
@@ -520,7 +578,7 @@ plot_infector_freq <- function(df, magnify_edge = 5, alt_label = FALSE, ...){
                             penwidth = df$freq * magnify_edge)
   g <- create_graph(node_df, edge_df) 
   if(alt_label)
-    return(list(graph = g, labels = nodes, from = df$infector, to = df$host_id))
+    return(list(graph = g, labels = nodes, from = df$infector, to = df$host_id, from_id = from, to_id = to))
   else
     render_graph(g, ...) # show graph
 }
