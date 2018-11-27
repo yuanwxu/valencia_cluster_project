@@ -1,5 +1,4 @@
 # Analysis of multiple transmission clusters 
-# Final version: search email for "identical seqs in valencia clusters"
 
 library(ape)
 library(tidyverse)
@@ -69,6 +68,21 @@ get_timetrees_with_rates <- function(cls_mltree, cls_sts, sqlen, n, meanlog, sdl
     out[[i]] <- tdaterAnalysis(cls_mltree, cls_sts, sqlen, meanRateLimits = c(rate_left, r[i]+delta), ...)
   }
   names(out) <- format(round(r, 3), nsmall = 3) # use the rates to name the result, for easy reference
+  out
+}
+
+# tdaterAnalysis() is copied here for convenience
+tdaterAnalysis <- function(tre, sts, sqlen, ...){
+  stopifnot(length(tre) == length(sts))
+  out <- vector("list", length(tre))
+  for (i in seq_along(sts)) {
+    if(exists("tips_no_match", where = sts[[i]])){
+      out[[i]] <- dater(tre[[i]], sts[[i]]$sts, sqlen, estimateSampleTimes = sts[[i]]$sts_df, ...)
+    }
+    else{
+      out[[i]] <- dater(tre[[i]], sts[[i]]$sts, sqlen, ...)
+    }
+  }
   out
 }
 
@@ -163,7 +177,36 @@ cls_record2 <- transform_lst_cls_record(lst_cls_record2)
 
 
 # Posterior analysis
-#
+
+# Get weight factor for each tree to penalise transmission after diagnosis.
+# The weight is defined by t^k where k is number of sampled cases in the tree that have
+# late transmissions, t < 1 is hyperparameter
+get_tree_weight <- function(record, sts, ttrees = NULL, t = 0.5){
+  if(is.null(ttrees)){
+    ttrees <- map(record, ~ TransPhylo::extractTTree(.$ctree))
+  }
+  host_id <- record[[1]]$ctree$nam
+  inft <- purrr::map(host_id, get_inftime, record = record, ttrees = ttrees)
+  gent <- purrr::map(host_id, get_gentime, record = record, ttrees = ttrees, type = "min")
+  transmtime_mat <- do.call(cbind, inft) + do.call(cbind, gent)
+  k <- apply(transmtime_mat, 1, FUN = function(x) sum(x > sts$sts[host_id], na.rm = TRUE))
+  t^k
+}
+
+# Resample trees with given weights
+# x --- vector of observable values derived from posterior trees
+# wt --- the weight vector same size as x
+resample <- function(x, wt, size = 1000){
+  if(anyNA(x)){
+    message("NA will be ignored")
+  }
+  x_not_na <- !is.na(x)
+  x <- x[x_not_na]
+  wt <- wt[x_not_na]
+  sample(x, size = size, replace = TRUE, prob = wt)
+}
+
+
 # ==== Trace plot ====
 # Plot traces of parameters as function of MCMC step, colored by different simulated clock rate
 # may also be used as convergence diagnostics
@@ -195,8 +238,11 @@ cls_ttrees <- setNames(vector("list", length(cls_record2)), names(cls_record2))
 for(i in seq_along(cls_record2)){ # extract ttree from record to save computations required in analysis functions
   cls_ttrees[[i]] <- map(cls_record2[[i]], ~ extractTTree(.$ctree))
 }
+cls_wts <- setNames(vector("list", length(cls_record2)), names(cls_record2))
+cls_wts <- pmap(list(cls_record2, cls_sts, cls_ttrees), get_tree_weight, t = 0.1)
 
-cls_transmtime_df <- map2(cls_record2, cls_ttrees, get_transmtime_df, rates = names(lst_cls_record2))
+cls_transmtime_df <- pmap(list(record = cls_record2, ttrees = cls_ttrees, wt = cls_wts),
+                               get_transmtime_df, rates = names(lst_cls_record2))
 
 # Read epi data for each cluster
 # path --- path to directory
@@ -279,14 +325,14 @@ plot_transmtime2 <- function(cls_transmtime_df, cls_reftimes_df, r, show_cls = n
   df <- df %>% group_by(rate, cluster_id, host_id) %>% 
     summarise(prob_transm = sum(!is.na(gentime)) / n(), 
               transm_time = list(quantile(transmtime, na.rm = TRUE))) %>%
-    mutate(transm_time_lowerq = map_dbl(transm_time, "25%"),
+    mutate(transm_time_lower = map_dbl(transm_time, "25%"),
            transm_time_median = map_dbl(transm_time, "50%"),
-           transm_time_upperq = map_dbl(transm_time, "75%"))
+           transm_time_upper = map_dbl(transm_time, "75%"))
   if(plot){
     df %>% 
       filter(rate == r, cluster_id %in% show_cls) %>%
       ggplot() +
-      geom_errorbarh(aes(y=host_id, xmin=transm_time_lowerq, xmax=transm_time_upperq, 
+      geom_errorbarh(aes(y=host_id, xmin=transm_time_lower, xmax=transm_time_upper, 
                          color = prob_transm)) +
       geom_point(aes(transm_time_median, host_id, color=prob_transm), size = 2) +
       geom_point(aes(x = value, y = host_id, shape = key),
@@ -296,18 +342,81 @@ plot_transmtime2 <- function(cls_transmtime_df, cls_reftimes_df, r, show_cls = n
       labs(x = "Time", y = "Host", shape = "key")
   }
   else{
-    return(df)
+    return(list(df, df_ref))
+  }
+}
+
+# Weighted version: cls_transmtime_df must contain a column "wt"
+# size --- resample size, to be passed to resample()
+# use_median --- if TRUE, will construct uncertainty bounds using median, .25 and .75 quantile of the weighted resampling
+# use_mean --- !use_median, will use mean and standard error to construct uncertainty bounds
+plot_transmtime2_wt <- function(cls_transmtime_df, cls_reftimes_df, r, show_cls = names(cls_transmtime_df),
+                             plot = TRUE, size = 1000, use_median = TRUE, use_mean = !use_median){
+  stopifnot(all.equal(names(cls_reftimes_df), names(cls_transmtime_df)))
+  stopifnot(r %in% unique(cls_transmtime_df[[1]]$rate))
+  
+  cls_name <- names(cls_transmtime_df)
+  df <- map2(cls_transmtime_df, cls_name, ~ mutate(.x, cluster_id = .y)) %>%
+    map_dfr(~.) # add column cluster_id then rbind all data frames
+  
+  df_ref <- map2(cls_reftimes_df, cls_name, ~ mutate(.x, cluster_id = .y)) %>%
+    map_dfr(~.) # add column cluster_id then rbind all data frames
+  
+  df <- df %>% group_by(rate, cluster_id, host_id) %>% 
+    summarise(prob_transm = sum(wt * !is.na(gentime)) / sum(wt),
+              transm_time = list(resample(transmtime, wt, size)))
+  if(use_median){
+    df <- df %>%
+      mutate(transm_time_q = map(transm_time, quantile),
+             transm_time_lower = map_dbl(transm_time_q, "25%"),
+             transm_time_median = map_dbl(transm_time_q, "50%"),
+             transm_time_upper = map_dbl(transm_time_q, "75%"))
+  }
+  if(use_mean){
+    df <- df %>%
+      mutate(transm_time_mean = map_dbl(transm_time, mean),
+             transm_time_se = map_dbl(transm_time, sd)/sqrt(size),
+             transm_time_lower = transm_time_mean - transm_time_se,
+             transm_time_upper = transm_time_mean + transm_time_se)
+  }
+  
+  if(use_median){
+    df <- rename(df, time = transm_time_median)      
+  }
+  if(use_mean){
+    df <- rename(df, time = transm_time_mean)
+  }
+  
+  if(plot){
+    df %>% 
+      filter(rate == r, cluster_id %in% show_cls) %>%
+      ggplot() +
+      geom_errorbarh(aes(y=host_id, xmin=transm_time_lower, xmax=transm_time_upper, color = prob_transm)) +
+      geom_point(aes(time, host_id, color=prob_transm), size = 2) +
+      geom_point(aes(x = value, y = host_id, shape = key),
+                 data = df_ref %>% filter(cluster_id %in% show_cls), size = 2) +
+      scale_shape_manual(values = c(0,2)) +
+      facet_wrap(~cluster_id, scales = "free") +
+      labs(x = "Time", y = "Host", shape = "key")
+  }
+  else{
+    return(list(df, df_ref))
   }
 }
 
 plot_transmtime2(cls_transmtime_df, cls_times_df, "0.363", show_cls = cls_name[1:6]) 
+lst_df <- plot_transmtime2(cls_transmtime_df, cls_times_df, "0.363", plot = FALSE) 
 
-df <- plot_transmtime2(cls_transmtime_df, cls_times_df, "0.363", plot = FALSE) 
+plot_transmtime2_wt(cls_transmtime_df, cls_times_df, "0.363", show_cls = cls_name[1:6]) 
+lst_df <- plot_transmtime2_wt(cls_transmtime_df, cls_times_df, "0.363", plot = FALSE)
+df <- lst_df[[1]]
+df_ref <- lst_df[[2]]
+
 df <- df %>% filter(rate == "0.363", prob_transm > 0.6)
-ggplot(df) + geom_errorbarh(aes(y=host_id, xmin=transm_time_lowerq, xmax=transm_time_upperq)) + 
-  geom_point(aes(transm_time_median, host_id, color=prob_transm), size = 3) +
+ggplot(df) + geom_errorbarh(aes(y=host_id, xmin=transm_time_lower, xmax=transm_time_upper)) + 
+  geom_point(aes(time, host_id), size = 3) +
   geom_point(aes(x = value, y = host_id, shape = key),
-             data = df_ref %>% filter(host_id %in% df$host_id), size = 4) +
+             data = df_ref %>% filter(host_id %in% df$host_id), size = 3) +
   scale_shape_manual(values = c(0,2)) +
   labs(x = "Time", y = "Host", 
        title = "Median time of first transmissions", 
@@ -370,20 +479,62 @@ transm_before_symptom <- function(record, symptime, plot = TRUE, ...){
 
 
 # ==== Unsampled cases ====
+# Get data frame of unsampled case
+# rates --- char vector containg the simulated clock rates
+# cls_wts --- weights associated with posteiror trees of all clusters, defined above
+get_unsamp_df <- function(cls_record, cls_ttrees = NULL, rates = NULL, cls_wts = NULL){
+  if(is.null(cls_ttrees)){
+    cls_ttrees <- setNames(vector("list", length(cls_record)), names(cls_record))
+    for(i in seq_along(cls_record)){ 
+      cls_ttrees[[i]] <- map(cls_record[[i]], ~ extractTTree(.$ctree))
+    }
+  }
+  out <- tibble(cluster_id = names(cls_record2),
+         unsamp = map2(cls_record2, cls_ttrees, get_num_unsampled)) %>%
+    unnest()
+  if(!is.null(rates)){
+    r <- rep(rates, each = length(cls_record2[[1]]) / length(rates))  
+    out <- mutate(out, rate = rep(r, length(cls_record)))
+  }
+  if(!is.null(cls_wts)){
+    out <- mutate(out, wt = flatten_dbl(cls_wts))
+  }
+  out
+}
+
 # NOTE: "slice(1:n())" a trick to make the tibble work with unnest
-cls_unsamp_df <- tibble(cluster_id = names(cls_record2),
-                        unsamp = map2(cls_record2, cls_ttrees, get_num_unsampled),
-                        rate = list(rep(names(lst_cls_record2), each = length(lst_cls_record2[[1]][[1]])))) %>%
-  slice(1:n()) %>%                  
-  unnest()
+# cls_unsamp_df <- tibble(cluster_id = names(cls_record2),
+#                         unsamp = map2(cls_record2, cls_ttrees, get_num_unsampled),
+#                         rate = list(rep(names(lst_cls_record2), each = length(lst_cls_record2[[1]][[1]])))) %>%
+#   slice(1:n()) %>%                  
+#   unnest()
+# cls_unsamp_df %>%
+#   filter(cluster_id %in% cls_name[1:10]) %>%
+#   ggplot(aes(reorder(cluster_id, unsamp, FUN = median), unsamp)) + geom_boxplot(aes(fill = rate)) +
+#   xlab("Cluster") + ylab("Number of unsampled cases")
+# cls_unsamp_df %>%
+#   filter(cluster_id %in% cls_name[11:21]) %>%
+#   ggplot(aes(reorder(cluster_id, unsamp, FUN = median), unsamp)) + geom_boxplot(aes(fill = rate)) +
+#   xlab("Cluster") + ylab("Number of unsampled cases")
+
+cls_unsamp_df <- get_unsamp_df(cls_record2, cls_ttrees, rates = names(lst_cls_record2), cls_wts)
 cls_unsamp_df %>%
   filter(cluster_id %in% cls_name[1:10]) %>%
-  ggplot(aes(reorder(cluster_id, unsamp, FUN = median), unsamp)) + geom_boxplot(aes(fill = rate)) +
-  xlab("Cluster") + ylab("Number of unsampled cases")
-cls_unsamp_df %>%
-  filter(cluster_id %in% cls_name[11:21]) %>%
-  ggplot(aes(reorder(cluster_id, unsamp, FUN = median), unsamp)) + geom_boxplot(aes(fill = rate)) +
-  xlab("Cluster") + ylab("Number of unsampled cases")
+  group_by(cluster_id, rate) %>%
+  summarise(wmean = sum(wt * unsamp) / sum(wt)) %>%
+  ggplot(aes(reorder(cluster_id, wmean), wmean)) +
+  geom_col(aes(fill = rate), position = "dodge") +
+  labs(x = "Cluster", y = latex2exp::TeX("Mean unsampled cases weighted by $t^k$"))
+# Only show one clock rate
+cls_unsamp_df %>% 
+  filter(rate == "0.363") %>%
+  group_by(cluster_id, rate) %>%
+  summarise(wmean = sum(wt * unsamp) / sum(wt)) %>%
+  ggplot(aes(reorder(cluster_id, wmean), wmean)) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1)) +
+  labs(x = "Cluster", y = latex2exp::TeX("Mean unsampled cases weighted by $t^k$"))
+
        
 
 
@@ -409,7 +560,8 @@ plot_index_first_dgns <- function(record, sts, title, max_to_show = NULL){
 }
 
 # Get index case data for all clusters
-get_cls_index_df <- function(cls_record, cls_ttrees = NULL, cls_sts){
+# cls_wts --- weights associated with posterior trees in all clusters, defined above
+get_cls_index_df <- function(cls_record, cls_ttrees = NULL, cls_sts, cls_wts = NULL){
   if(is.null(cls_ttrees)){
     cls_ttrees <- setNames(vector("list", length(cls_record)), names(cls_record))
     for(i in seq_along(cls_record)){ 
@@ -419,16 +571,30 @@ get_cls_index_df <- function(cls_record, cls_ttrees = NULL, cls_sts){
   
   cls_dtime <- map(cls_sts, ~ c(.$sts, Unsampled = NA))
   lst_df <- vector("list", length(cls_record))
-  for(i in seq_along(lst_df)){
-    lst_df[[i]] <- tibble(cluster_id = names(cls_record)[i], 
-                          index_case = map_chr(cls_record[[i]], "source")) %>%
-      count(cluster_id, index_case, sort = TRUE) %>%
-      mutate(dgns_time = map_dbl(index_case, ~ cls_dtime[[i]][[.]]))
+  if(is.null(cls_wts)){
+    for(i in seq_along(lst_df)){
+      lst_df[[i]] <- tibble(cluster_id = names(cls_record)[i], 
+                            index_case = map_chr(cls_record[[i]], "source")) %>%
+        count(cluster_id, index_case, sort = TRUE) %>%
+        mutate(dgns_time = map_dbl(index_case, ~ cls_dtime[[i]][[.]]))
+    }
+  } 
+  else{
+    for(i in seq_along(lst_df)){
+      lst_df[[i]] <- tibble(cluster_id = names(cls_record)[i], 
+                            index_case = map_chr(cls_record[[i]], "source"),
+                            wt = cls_wts[[i]]) %>%
+        count(cluster_id, index_case, sort = TRUE, wt = wt) %>%
+        mutate(prob = n / sum(n), # = n / sum(cls_wts[[i]]
+               dgns_time = map_dbl(index_case, ~ cls_dtime[[i]][[.]]))
+    }
   }
+  
   map_dfr(lst_df, ~ .)
 }
 
 cls_index_df <- get_cls_index_df(cls_record2, cls_ttrees, cls_sts)
+cls_index_df <- get_cls_index_df(cls_record2, cls_ttrees, cls_sts, cls_wts)
 
 # Showing index case distribution of all clusters in stacked bar chart
 # max_case --- max #cases to show for each cluster

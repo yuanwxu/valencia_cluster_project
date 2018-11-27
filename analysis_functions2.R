@@ -36,12 +36,14 @@ get_infector_freq <- function(record, ttrees = NULL){
 # Get time of first transmission event for each host in a cluster, conditioned on transmission happened
 # rates --- if not NULL, character vector of rates used to estimate time-trees, in which case "record"
 #          will be "records" corresponding to these rates stacked together
+# wt --- weight factor associated with each tree (see get_tree_weight in valencia_cluster_final.R)
 # Return: a data frame
-get_transmtime_df <- function(record, ttrees = NULL, rates = NULL){
+get_transmtime_df <- function(record, ttrees = NULL, rates = NULL, wt = NULL){
   if(is.null(ttrees)){
     ttrees <- purrr::map(record, ~ TransPhylo::extractTTree(.$ctree))
   }
-  df <- tibble(host_id = record[[1]]$ctree$nam,
+  host_id <- record[[1]]$ctree$nam
+  df <- tibble(host_id = host_id,
                inftime = purrr::map(host_id, get_inftime, record = record, 
                              ttrees = ttrees),  
                gentime = purrr::map(host_id, get_gentime, record = record, 
@@ -49,9 +51,13 @@ get_transmtime_df <- function(record, ttrees = NULL, rates = NULL){
   if(!is.null(rates)){
     df <- df %>% mutate(rate = list(rep(rates, each = length(record)/length(rates))))
   }
-  df %>%
+  df <- df %>%
     unnest() %>%
     mutate(transmtime = inftime + gentime)
+  if(!is.null(wt)){
+    df <- df %>% mutate(wt = rep(wt, length(!! host_id))) # "!!" used to  bypass the data frame and look directly in the context
+  }
+  df
 }
 
 
